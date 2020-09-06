@@ -11,6 +11,10 @@ jobs:
 
     runs-on: windows-latest
 
+    env:
+      DOTNET_VERSION: 3.1.301
+      RELEASE_SUBDIR: netcoreapp3.1
+
     steps:
     - name: Checkout
       uses: actions/checkout@v2
@@ -19,23 +23,23 @@ jobs:
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v1
       with:
-        dotnet-version: 3.1.301
+        dotnet-version: $DOTNET_VERSION
     - name: Install dependencies
       run: dotnet restore
     - name: Build
       run: dotnet build --configuration Release --no-restore
     - name: Test
-      run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat=\"json,opencover,cobertura\" /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
+      run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat=json,cobertura /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
     - name: Upload build artefact myDupFinder
       uses: actions/upload-artifact@v2
       with:
         name: myDupFinder
-        path: D:\a\myDupFinder\myDupFinder\src\rogerbriggen.myDupFinder\bin\Release\netcoreapp3.1\
+        path: D:\a\myDupFinder\myDupFinder\src\rogerbriggen.myDupFinder\bin\Release\$RELEASE_SUBDIR\
     - name: Upload build artefact myDupFinderUnitTest
       uses: actions/upload-artifact@v2
       with:
         name: myDupFinderLibUnitTest
-        path: D:\a\myDupFinder\myDupFinder\tests\rogerbriggen.myDupFinderLibUnitTest\bin\Release\netcoreapp3.1\
+        path: D:\a\myDupFinder\myDupFinder\tests\rogerbriggen.myDupFinderLibUnitTest\bin\Release\$RELEASE_SUBDIR\
     - name: Upload build artefact myDupFinderUnitTest TestResults
       uses: actions/upload-artifact@v2
       with:
