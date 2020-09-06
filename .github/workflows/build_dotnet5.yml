@@ -12,12 +12,14 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        fetch-depth: 0 #avoid shallow clone so nerdbank gitversioning can do its work, see https://github.com/dotnet/Nerdbank.GitVersioning/blob/master/doc/cloudbuild.md
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v1
       with:
-#       dotnet 5 preview 8
-        dotnet-version: 5.0.100-preview.8.20417.9
+        dotnet-version: 5.0.100-preview.8.20417.9   #dotnet 5 preive 8, see https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/5.0/releases.json
     - name: Install dependencies
       run: dotnet restore
     - name: Build
