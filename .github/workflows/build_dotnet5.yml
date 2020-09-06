@@ -1,10 +1,7 @@
 name: .NET Core 5
 
-on:
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+# do not trigger right now... just a waste of ressources...    
+on: [workflow_dispatch]
 
 jobs:
   build:
