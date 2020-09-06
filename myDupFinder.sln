@@ -23,6 +23,14 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "myDupFinderLibUnitTest", "t
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "myDupFinderLib", "src\rogerbriggen.myDupFinderLib\myDupFinderLib.csproj", "{E645F273-2E0A-4E9D-B9BB-24FE12F64325}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".github", ".github", "{58701386-6FDB-4EB7-80E2-96EB9EC96FDC}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "workflows", "workflows", "{6C5C0B0F-DA6D-4307-9001-740930A48339}"
+	ProjectSection(SolutionItems) = preProject
+		.github\workflows\build.yml = .github\workflows\build.yml
+		.github\workflows\build_dotnet5.yml = .github\workflows\build_dotnet5.yml
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -49,6 +57,7 @@ Global
 		{A6BF0925-1BEE-4B3B-BDBC-063F7371701A} = {FA32D65B-98C5-4E76-A786-FC65A5241C3A}
 		{878FB644-520B-4B5F-91DF-BFEB17F6F2C8} = {D4DF4AE2-AC71-450B-8854-AD525595C78C}
 		{E645F273-2E0A-4E9D-B9BB-24FE12F64325} = {FA32D65B-98C5-4E76-A786-FC65A5241C3A}
+		{6C5C0B0F-DA6D-4307-9001-740930A48339} = {58701386-6FDB-4EB7-80E2-96EB9EC96FDC}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {FB1D38F4-3727-4C54-8AEF-06436E23177D}
