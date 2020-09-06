@@ -26,3 +26,13 @@ jobs:
       run: dotnet build --configuration Release --no-restore
     - name: Test
       run: dotnet test --no-restore --verbosity normal
+    - name: Upload build artefact myDupFinder
+      uses: actions/upload-artifact@v2
+      with:
+        name: myDupFinder
+        path: D:\a\myDupFinder\myDupFinder\src\rogerbriggen.myDupFinder\bin\Release\netcoreapp3.1\
+    - name: Upload build artefact myDupFinderUnitTest
+      uses: actions/upload-artifact@v2
+      with:
+        name: myDupFinderLibUnitTest
+        path: D:\a\myDupFinder\myDupFinder\tests\rogerbriggen.myDupFinderLibUnitTest\bin\Release\netcoreapp3.1\
