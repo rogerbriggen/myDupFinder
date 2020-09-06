@@ -25,7 +25,7 @@ jobs:
     - name: Build
       run: dotnet build --configuration Release --no-restore
     - name: Test
-      run: dotnet test --no-restore --verbosity normal
+      run: dotnet test --no-restore --configuration Release --verbosity normal --logger "console;verbosity=detailed" dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=\"json,opencover,cobertura\" /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
     - name: Upload build artefact myDupFinder
       uses: actions/upload-artifact@v2
       with:
@@ -36,3 +36,8 @@ jobs:
       with:
         name: myDupFinderLibUnitTest
         path: D:\a\myDupFinder\myDupFinder\tests\rogerbriggen.myDupFinderLibUnitTest\bin\Release\netcoreapp3.1\
+    - name: Upload build artefact myDupFinderUnitTest TestResults
+      uses: actions/upload-artifact@v2
+      with:
+        name: myDupFinderLibUnitTestCodeCoverage
+        path: D:\a\myDupFinder\myDupFinder\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\
