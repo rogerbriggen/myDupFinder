@@ -23,13 +23,13 @@ jobs:
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v1
       with:
-        dotnet-version: $DOTNET_VERSION
+        dotnet-version: ${{ env.DOTNET_VERSION }}
     - name: Install dependencies
       run: dotnet restore
     - name: Build
       run: dotnet build --configuration Release --no-restore
     - name: Test
-      run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat=json,cobertura /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
+      run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat="json,cobertura" /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
     - name: Upload build artefact myDupFinder
       uses: actions/upload-artifact@v2
       with:
