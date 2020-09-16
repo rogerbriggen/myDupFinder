@@ -2,14 +2,14 @@
 {
     public class MyDupFinderScanJobDTO
     {
-        public string JobName { get; set; }
+        public string JobName { get; set; } = string.Empty;
 
-        public string BasePath { get; set; }
+        public string BasePath { get; set; } = string.Empty;
 
-        public string OriginComputer { get; set; }
+        public string OriginComputer { get; set; } = string.Empty;
 
-        public string DatabaseFile { get; set; }
+        public string DatabaseFile { get; set; } = string.Empty;
 
-        public string? ReportName { get; set; }
+        public string ReportName { get; set; } = string.Empty;
     }
 }

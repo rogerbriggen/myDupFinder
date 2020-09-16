@@ -10,8 +10,8 @@ namespace RogerBriggen.MyDupFinderLib
             MyDupFinderCheckJobDTOs = new List<MyDupFinderCheckJobDTO>();
             MyDupFinderFindDupsJobDTOs = new List<MyDupFinderFindDupsJobDTO>();
         }
-        public List<MyDupFinderScanJobDTO> MyDupFinderScanJobDTOs { get; set; }
-        public List<MyDupFinderCheckJobDTO> MyDupFinderCheckJobDTOs { get; set; }
-        public List<MyDupFinderFindDupsJobDTO> MyDupFinderFindDupsJobDTOs { get; set; }
+        public List<MyDupFinderScanJobDTO> MyDupFinderScanJobDTOs { get; }
+        public List<MyDupFinderCheckJobDTO> MyDupFinderCheckJobDTOs { get; }
+        public List<MyDupFinderFindDupsJobDTO> MyDupFinderFindDupsJobDTOs { get; }
     }
 }

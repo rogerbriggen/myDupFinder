@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Diagnostics.Contracts;
+using System.IO;
 using System.Xml;
 
 namespace RogerBriggen.MyDupFinderLib
@@ -16,12 +17,13 @@ namespace RogerBriggen.MyDupFinderLib
         }
 
 
-        public static void WriteConfigurationToFile(MyDupFinderProjectDTO myDupFinderProjetDTO, string pathAndFilename)
+        public static void WriteConfigurationToFile(MyDupFinderProjectDTO myDupFinderProjectDTO, string pathAndFilename)
         {
-            System.Xml.Serialization.XmlSerializer x = new System.Xml.Serialization.XmlSerializer(myDupFinderProjetDTO.GetType());
+            Contract.Requires(myDupFinderProjectDTO != null);
+            System.Xml.Serialization.XmlSerializer x = new System.Xml.Serialization.XmlSerializer(myDupFinderProjectDTO!.GetType());
             using (FileStream fs = new FileStream(pathAndFilename, FileMode.CreateNew, FileAccess.Write))
             {
-                x.Serialize(fs, myDupFinderProjetDTO);
+                x.Serialize(fs, myDupFinderProjectDTO);
             }
         }
 

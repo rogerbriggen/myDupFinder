@@ -11,7 +11,7 @@ namespace RogerBriggen.MyDupFinderLib
         /// <summary>
         /// The complete path to the file.
         /// </summary>
-        private string filenameAndPath;
+        private string filenameAndPath = string.Empty;
 
         /// <summary>
         /// Gets or sets the complete path to the file.
@@ -21,22 +21,22 @@ namespace RogerBriggen.MyDupFinderLib
         /// <summary>
         /// Gets the filename (must be the same as in FilenameAndPath), but is for easier checking.
         /// </summary>
-        public string Filename { get; private set; }
+        public string Filename { get; private set; } = string.Empty;
 
         /// <summary>
         /// Gets or Sets the base path part, so we can move the file later on and still finding them.
         /// </summary>
-        public string PathBase { get; set; }
+        public string PathBase { get; set; } = string.Empty;
 
         /// <summary>
         /// Gets or Sets the computer name, where the scan is executed
         /// </summary>
-        public string ScanExecutionComputer { get; set; }
+        public string ScanExecutionComputer { get; set; } = string.Empty;
 
         /// <summary>
         /// Gets or Sets the computer name, where the file is located. (User provided)
         /// </summary>
-        public string OriginComputer { get; set; }
+        public string OriginComputer { get; set; } = string.Empty;
 
         public long FileSize { get; set; }
 
@@ -44,7 +44,7 @@ namespace RogerBriggen.MyDupFinderLib
 
         public DateTime FileLastModificationUTC { get; set; }
 
-        public string FileSha512Hash { get; set; }
+        public string FileSha512Hash { get; set; } = string.Empty;
 
         /// <summary>
         /// Gets or Sets the date, when the original entry was created and the hash was calculated and the file size read.

@@ -11,34 +11,45 @@ using Microsoft.Extensions.Logging;
 
 namespace RogerBriggen.MyDupFinderLib
 {
-    internal class ScanRunner : IDisposable
+
+    internal class ScanRunner : IDisposable, IScanRunner
     {
+
+        public ServiceState ScanState
+        {
+            get => _scanState;
+            set
+            {
+                if (_scanState != value)
+                {
+                    _scanState = value;
+                    OnScanStateChanged(value);
+                }
+
+
+            }
+        }
+
+        public ScanRunner(string basePath, string originComputer, ILogger<ScanRunner> logger)
+        {
+            ScanState = ServiceState.idle;
+            BasePath = basePath;
+            OriginComputer = originComputer;
+            _logger = logger;
+        }
+
+        public event EventHandler<int>? ScanProgressChanged;
+        public event EventHandler<ServiceState>? ScanStateChanged;
+
         private string BasePath { get; set; }
 
         private string OriginComputer { get; set; }
 
         private readonly ILogger<ScanRunner> _logger;
 
+        private ServiceState _scanState;
+
         private CancellationToken CancelToken { get; set; }
-
-        public enum State
-        {
-            idle,
-            running,
-            paused,
-            pausing,
-            finished
-        }
-
-        public State ScanState { get; set; }
-
-        public ScanRunner(string basePath, string originComputer, ILogger<ScanRunner> logger)
-        {
-            ScanState = State.idle;
-            BasePath = basePath;
-            OriginComputer = originComputer;
-            _logger = logger;
-        }
 
         private BlockingCollection<ScanItem> _scanItemCollection = new BlockingCollection<ScanItem>();
         private ConcurrentQueue<ScanItem> _finishedScanItemCollection = new ConcurrentQueue<ScanItem>();
@@ -48,7 +59,7 @@ namespace RogerBriggen.MyDupFinderLib
         public void Start(CancellationToken token)
         {
             CancelToken = token;
-            ScanState = State.running;
+            ScanState = ServiceState.running;
             Scan();
             Console.ReadKey();
         }
@@ -69,13 +80,15 @@ namespace RogerBriggen.MyDupFinderLib
                                                           {
                                                               using (var stream = File.OpenRead(item.FilenameAndPath))
                                                               {
-                                                                  item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "");
+                                                                  item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
                                                                   _finishedScanItemCollection.Enqueue(item);
                                                                   _logger.LogInformation("File {file} successfull finished", item.FilenameAndPath);
                                                               }
                                                           }
                                                       }
+#pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen
                                                       catch (Exception e)
+#pragma warning restore CA1031 // Keine allgemeinen Ausnahmetypen abfangen
                                                       {
                                                           _failedScanItemCollection.Enqueue(item);
                                                           _logger.LogError(e, "Hashing of {file} failed.", item.FilenameAndPath);
@@ -83,7 +96,7 @@ namespace RogerBriggen.MyDupFinderLib
 
                                                   });
                                                   _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", _finishedScanItemCollection.Count, _failedScanItemCollection.Count, _scanItemCollection.Count);
-                                                  ScanState = State.finished;
+                                                  ScanState = ServiceState.finished;
                                               });
                 var files = Directory.EnumerateFiles(BasePath, "*", SearchOption.AllDirectories);
                 foreach (string currentFile in files)
@@ -116,7 +129,7 @@ namespace RogerBriggen.MyDupFinderLib
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "There was an exception during file attribute reading...");
+                        _logger.LogError(ex, "There was an exception during file attribute reading of file {file}", currentFile);
                     }
 
                 }
@@ -157,6 +170,17 @@ namespace RogerBriggen.MyDupFinderLib
             // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
             Dispose(disposing: true);
             GC.SuppressFinalize(this);
+        }
+
+        protected virtual void OnScanProgressChanged(int progress)
+        {
+            EventHandler<int>? handler = ScanProgressChanged;
+            handler?.Invoke(this, progress);
+        }
+        protected virtual void OnScanStateChanged(ServiceState state)
+        {
+            EventHandler<ServiceState>? handler = ScanStateChanged;
+            handler?.Invoke(this, state);
         }
     }
 }

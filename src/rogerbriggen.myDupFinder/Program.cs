@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,18 +27,19 @@ namespace RogerBriggen.MyDupFinder
             //Scan commandline
             if (args.Length == 2)
             {
-                if (args[0].ToLower() == "exampleproject")
+                CultureInfo ci = new CultureInfo("");
+                if (args[0].ToLower(ci) == "exampleproject")
                 {
                     MyDupFinderProjectDTO dto;
                     MyDupFinderProject.getExampleDTO(out dto);
                     MyDupFinderProject.WriteConfigurationToFile(dto, args[1]);
                 }
-                else if (args[0].ToLower() == "dryrun")
+                else if (args[0].ToLower(ci) == "dryrun")
                 {
                     MyDupFinderProjectDTO dto;
                     MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
                 }
-                else if (args[0].ToLower() == "run")
+                else if (args[0].ToLower(ci) == "run")
                 {
                     MyDupFinderProjectDTO dto;
                     MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
@@ -135,12 +137,13 @@ namespace RogerBriggen.MyDupFinder
     }
 
 #pragma warning disable SA1402 // File may only contain a single type
-    public static class Extensions
+    public static class MyExtensions
 #pragma warning restore SA1402 // File may only contain a single type
     {
         public static IServiceCollection AddSerilogServices(this IServiceCollection services, LoggerConfiguration configuration)
         {
-            Log.Logger = configuration.CreateLogger();
+            Contract.Requires(configuration != null);
+            Log.Logger = configuration!.CreateLogger();
             AppDomain.CurrentDomain.ProcessExit += (s, e) => { Log.Information("**** Closing log... ****"); Log.CloseAndFlush(); };
             return services.AddSingleton(Log.Logger);
         }

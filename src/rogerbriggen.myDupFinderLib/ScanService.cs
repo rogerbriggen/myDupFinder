@@ -5,38 +5,39 @@ using Microsoft.Extensions.Logging;
 
 namespace RogerBriggen.MyDupFinderLib
 {
-    public delegate void ScanProgressEventHandler(object sender, int itemCount);
 
-    public delegate void ScanStateEventHandler(object sender, ScanService.State scanState);
 
-    public class ScanService : IDisposable
+    public class ScanService : IDisposable, IScanService
     {
-        public enum State
+
+        private ServiceState _scanState;
+        private ServiceState ScanState
         {
-            idle,
-            running,
-            paused,
-            pausing,
-            finished
+            get => _scanState;
+            set
+            {
+                if (_scanState != value)
+                {
+                    _scanState = value;
+                    OnScanStateChanged(value);
+                }
+            }
         }
 
-
-        public event ScanProgressEventHandler ScanProgressChanged;
-        public event ScanStateEventHandler ScanStateChanged;
-
-        private State ScanState { get; set; }
-
-        private CancellationTokenSource cts;
-        private ScanRunner sr;
+        private CancellationTokenSource? cts;
+        private ScanRunner? sr;
 
 
         private readonly ILogger<ScanService> _logger;
         private readonly IServiceProvider _serviceProvider;
         private bool _disposedValue;
 
+        public event EventHandler<int>? ScanProgressChanged;
+        public event EventHandler<ServiceState>? ScanStateChanged;
+
         public ScanService(ILogger<ScanService> logger, IServiceProvider serviceProvider)
         {
-            ScanState = State.idle;
+            ScanState = ServiceState.idle;
             _logger = logger;
             _serviceProvider = serviceProvider;
         }
@@ -45,8 +46,9 @@ namespace RogerBriggen.MyDupFinderLib
         {
             //TODO check if runner for base path exits... if not, create and add to queue
 
-            if (ScanState == State.idle)
+            if (ScanState == ServiceState.idle)
             {
+                ScanState = ServiceState.running;
                 cts = new CancellationTokenSource();
                 sr = new ScanRunner(basePath, originComputer, _serviceProvider.GetService<ILogger<ScanRunner>>());
                 sr.Start(cts.Token);
@@ -55,9 +57,9 @@ namespace RogerBriggen.MyDupFinderLib
 
         public void StopScan(string basePath)
         {
-            if (ScanState == State.running)
+            if (ScanState == ServiceState.running)
             {
-                cts.Cancel();
+                cts?.Cancel();
             }
         }
 
@@ -68,8 +70,8 @@ namespace RogerBriggen.MyDupFinderLib
                 if (disposing)
                 {
                     // TODO: Verwalteten Zustand (verwaltete Objekte) bereinigen
-                    cts.Dispose();
-                    sr.Dispose();
+                    cts?.Dispose();
+                    sr?.Dispose();
                 }
 
                 // TODO: Nicht verwaltete Ressourcen (nicht verwaltete Objekte) freigeben und Finalizer überschreiben
@@ -90,6 +92,26 @@ namespace RogerBriggen.MyDupFinderLib
             // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
             Dispose(disposing: true);
             GC.SuppressFinalize(this);
+        }
+
+        protected virtual void OnScanProgressChanged(int progress)
+        {
+            EventHandler<int>? handler = ScanProgressChanged;
+            handler?.Invoke(this, progress);
+        }
+        protected virtual void OnScanStateChanged(ServiceState state)
+        {
+            EventHandler<ServiceState>? handler = ScanStateChanged;
+            handler?.Invoke(this, state);
+        }
+
+        private void ScanStateEventHandler(object _, ServiceState scanState)
+        {
+            _logger.LogInformation("Runner changed to state {scanState}", scanState);
+            if (scanState == ServiceState.finished)
+            {
+                ScanState = scanState;
+            }
         }
     }
 }
