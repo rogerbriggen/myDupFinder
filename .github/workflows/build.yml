@@ -20,26 +20,27 @@ jobs:
       uses: actions/checkout@v2
       with:
         fetch-depth: 0 #avoid shallow clone so nerdbank gitversioning can do its work, see https://github.com/dotnet/Nerdbank.GitVersioning/blob/master/doc/cloudbuild.md
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v1
-      with:
-        dotnet-version: $DOTNET_VERSION
+# Currently, we used the installed version...
+#    - name: Setup .NET Core
+#      uses: actions/setup-dotnet@v1
+#      with:
+#        dotnet-version: ${{ env.DOTNET_VERSION }}
     - name: Install dependencies
       run: dotnet restore
     - name: Build
       run: dotnet build --configuration Release --no-restore
     - name: Test
-      run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat=json,cobertura /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
+      run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat="cobertura" /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
     - name: Upload build artefact myDupFinder
       uses: actions/upload-artifact@v2
       with:
         name: myDupFinder
-        path: D:\a\myDupFinder\myDupFinder\src\rogerbriggen.myDupFinder\bin\Release\$RELEASE_SUBDIR\
+        path: D:\a\myDupFinder\myDupFinder\src\rogerbriggen.myDupFinder\bin\Release\${{ env.RELEASE_SUBDIR }}\
     - name: Upload build artefact myDupFinderUnitTest
       uses: actions/upload-artifact@v2
       with:
         name: myDupFinderLibUnitTest
-        path: D:\a\myDupFinder\myDupFinder\tests\rogerbriggen.myDupFinderLibUnitTest\bin\Release\$RELEASE_SUBDIR\
+        path: D:\a\myDupFinder\myDupFinder\tests\rogerbriggen.myDupFinderLibUnitTest\bin\Release\${{ env.RELEASE_SUBDIR }}\
     - name: Upload build artefact myDupFinderUnitTest TestResults
       uses: actions/upload-artifact@v2
       with:
