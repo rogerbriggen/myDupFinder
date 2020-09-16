@@ -3,9 +3,10 @@ using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RogerBriggen.MyDupFinderLib;
 using Serilog;
 
-namespace rogerbriggen.myDupFinder
+namespace RogerBriggen.MyDupFinder
 {
     class Program
     {
@@ -13,7 +14,7 @@ namespace rogerbriggen.myDupFinder
         {
             System.Threading.Thread.CurrentThread.Name = "MainThread";
 
-            //Setup log with DI
+            // Setup log with DI
             var serviceCollection = new ServiceCollection();
             ConfigureServices(serviceCollection);
             var serviceProvider = serviceCollection.BuildServiceProvider();
@@ -21,37 +22,81 @@ namespace rogerbriggen.myDupFinder
             var assembly = typeof(Program).Assembly;
             logger.LogInformation($"Application with version {assembly.GetName().Version}  ({ThisAssembly.AssemblyInformationalVersion}) started...");
 
+            //Do stuff
+            //Scan commandline
+            if (args.Length == 2)
+            {
+                if (args[0].ToLower() == "exampleproject")
+                {
+                    MyDupFinderProjectDTO dto;
+                    MyDupFinderProject.getExampleDTO(out dto);
+                    MyDupFinderProject.WriteConfigurationToFile(dto, args[1]);
+                }
+                else if (args[0].ToLower() == "dryrun")
+                {
+                    MyDupFinderProjectDTO dto;
+                    MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
+                }
+                else if (args[0].ToLower() == "run")
+                {
+                    MyDupFinderProjectDTO dto;
+                    MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
+                    foreach (MyDupFinderScanJobDTO scanDto in dto.MyDupFinderScanJobDTOs)
+                    {
+                        using (var scanService = serviceProvider.GetService<ScanService>())
+                        {
+                            logger.LogInformation("Running {JobName}...", scanDto.JobName);
+                            scanService.StartScan(scanDto.BasePath, scanDto.OriginComputer, scanDto.DatabaseFile);
+                        }
+                    }
+                }
+                else
+                {
+                    ShowHelp();
+                }
+            }
+            else
+            {
+                ShowHelp();
+            }
 
-            //Finish log
+            // Finish log
             logger.LogInformation("Application closing...");
-            //Use for Microsoft logger.... for serilog, we do it with AppDomain.CurrentDomain.ProcessExit
-            //serviceProvider.Dispose();
+
+            // Use for Microsoft logger.... for serilog, we do it with AppDomain.CurrentDomain.ProcessExit
+            // serviceProvider.Dispose();
+        }
+
+        private static void ShowHelp()
+        {
+            System.Console.WriteLine("exampleproject [projectfile.xml]");
+            System.Console.WriteLine("run [projectfile.xml]");
+            System.Console.WriteLine("dryrun [projectfile.xml]");
         }
 
         private static void ConfigureServices(IServiceCollection services)
         {
-            //we will configure logging here
-            //Microsoft logger
+            // we will configure logging here
+            // Microsoft logger
             /*
             services.AddLogging(configure => configure.AddConsole(consoleLoggerOptions => consoleLoggerOptions.TimestampFormat = "[dd.MM.yyyy HH:mm:ss.fff]")).Configure<LoggerFilterOptions>(cfg => cfg.MinLevel = LogLevel.Debug).AddTransient<Program>();
             services.AddLogging(configure => configure.AddDebug()).Configure<LoggerFilterOptions>(cfg => cfg.MinLevel = LogLevel.Debug).AddTransient<Program>();
             */
 
-
-            //Setup Serilog
+            // Setup Serilog
             if (File.Exists("appsettings.json"))
             {
-                //Serilog logger from file
+                // Serilog logger from file
                 var configuration = new ConfigurationBuilder()
                                         .AddJsonFile("appsettings.json")
                                         .Build();
                 services.AddSerilogServices(new LoggerConfiguration()
                                              .ReadFrom.Configuration(configuration));
 
-                services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog(dispose: true)).AddTransient<Program>();
+                services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog(dispose: true));
 
-                //Get application stuff
-                //var RemoteIncrediBuildSec = configuration.GetSection("RemoteIncrediBuild");
+                // Get application stuff
+                // var RemoteIncrediBuildSec = configuration.GetSection("RemoteIncrediBuild");
                 /*
                 if (RemoteIncrediBuildSec != null)
                 {
@@ -70,7 +115,7 @@ namespace rogerbriggen.myDupFinder
             }
             else
             {
-                //Serilog logger from code
+                // Serilog logger from code
                 string outputTemplate = "[{Timestamp:dd.MM.yyyy HH:mm:ss.ffff} {Level:u3}] {Message:lj} {Properties}[{ThreadId} {ThreadName}]{NewLine}{Exception}";
                 services.AddSerilogServices(new LoggerConfiguration()
                                                  .Enrich.WithThreadId()
@@ -80,17 +125,18 @@ namespace rogerbriggen.myDupFinder
                                                  .WriteTo.Async(w => w.File("MyLog.log", rollingInterval: RollingInterval.Day, outputTemplate: outputTemplate))
                                                  .WriteTo.Debug(outputTemplate: outputTemplate));
 
-                services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog(dispose: true)).AddTransient<Program>();
+                services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog(dispose: true));
             }
+            services.AddTransient<ScanService>();
+
 
             Log.Information("**** Opening log... ****");
         }
-
     }
 
-
-
+#pragma warning disable SA1402 // File may only contain a single type
     public static class Extensions
+#pragma warning restore SA1402 // File may only contain a single type
     {
         public static IServiceCollection AddSerilogServices(this IServiceCollection services, LoggerConfiguration configuration)
         {
@@ -100,4 +146,3 @@ namespace rogerbriggen.myDupFinder
         }
     }
 }
-

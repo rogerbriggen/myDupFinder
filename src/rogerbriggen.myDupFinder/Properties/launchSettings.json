@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "MyDupFinder": {
+      "commandName": "Project",
+      "commandLineArgs": "run m:\\test\\test.xml"
+    }
+  }
+}

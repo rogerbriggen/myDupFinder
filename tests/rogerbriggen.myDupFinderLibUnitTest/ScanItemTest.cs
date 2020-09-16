@@ -1,15 +1,24 @@
-﻿using rogerbriggen.myDupFinderLib;
+﻿// Roger Briggen license this file to you under the MIT license.
+//
+
+using RogerBriggen.MyDupFinderLib;
 using Xunit;
 
-namespace rogerbriggen.myDupFinderLibUnitTest
+namespace RogerBriggen.MyDupFinderLibUnitTest
 {
+
     public class ScanItemTest
     {
         [Fact]
-        public void Test1()
+        public void FilenameTest()
         {
             ScanItem scanItem = new ScanItem();
-            Assert.True(scanItem.MyTest());
+            scanItem.FilenameAndPath = @"o:\test\diesIstEinTest\meineDatei.txt";
+            Assert.Equal("meineDatei.txt", scanItem.Filename);
+            scanItem.FilenameAndPath = @"o:\test\diesIstEinTest\nochEineDatei.txt";
+            Assert.Equal("nochEineDatei.txt", scanItem.Filename);
+            scanItem.FilenameAndPath = @"o:\test\diesIstEinTest\meineDatei";
+            Assert.Equal("meineDatei", scanItem.Filename);
         }
     }
 }

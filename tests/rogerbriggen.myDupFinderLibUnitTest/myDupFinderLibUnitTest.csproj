@@ -5,11 +5,16 @@
 
     <IsPackable>false</IsPackable>
 
-    <RootNamespace>rogerbriggen.myDupFinderLibUnitTest</RootNamespace>
+    <RootNamespace>RogerBriggen.MyDupFinderLibUnitTest</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="coverlet.msbuild" Version="2.9.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="3.7.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.FxCopAnalyzers" Version="3.3.0">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
@@ -30,7 +35,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\rogerbriggen.myDupFinderLib\myDupFinderLib.csproj" />
+    <ProjectReference Include="..\..\src\rogerbriggen.myDupFinderLib\MyDupFinderLib.csproj" />
   </ItemGroup>
 
 </Project>

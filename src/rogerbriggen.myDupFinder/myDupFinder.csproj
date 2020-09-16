@@ -3,10 +3,16 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>$(TargetFramework)</TargetFramework>
-    <RootNamespace>rogerbriggen.myDupFinder</RootNamespace>
+    <RootNamespace>RogerBriggen.MyDupFinder</RootNamespace>
+    <AssemblyName>MyDupFinder</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="3.7.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.FxCopAnalyzers" Version="3.3.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="3.1.7" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="3.1.7" />
     <PackageReference Include="Nerdbank.GitVersioning" Version="3.2.31">
@@ -25,7 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\rogerbriggen.myDupFinderLib\myDupFinderLib.csproj" />
+    <ProjectReference Include="..\rogerbriggen.myDupFinderLib\MyDupFinderLib.csproj" />
   </ItemGroup>
 
   <ItemGroup>
