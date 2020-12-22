@@ -5,10 +5,9 @@ Find duplicates of files (or checks if the backup still is ok...)
 
 Build with latest dotnet relased:   ![.NET Core](https://github.com/rogerbriggen/myDupFinder/workflows/.NET%20Core/badge.svg)
 
-Build with dotnet Core 5 Preview 8: ![.NET Core 5](https://github.com/rogerbriggen/myDupFinder/workflows/.NET%20Core%205/badge.svg)
-
 ## Roadmap:
-- Scan Files and generate hash information
+- :heavy_check_mark: Scan Files and generate hash information
+- :heavy_check_mark: Store all the file and hash information in a db
 - Find dups in one database
 - Find dups in different databases
 - Visually show the dups and manually change the state

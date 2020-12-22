@@ -28,12 +28,11 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "workflows", "workflows", "{6C5C0B0F-DA6D-4307-9001-740930A48339}"
 	ProjectSection(SolutionItems) = preProject
 		.github\workflows\build.yml = .github\workflows\build.yml
-		.github\workflows\build_dotnet5.yml = .github\workflows\build_dotnet5.yml
 	EndProjectSection
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MyDupFinderDB", "src\rogerbriggen.myDupFinderDB\MyDupFinderDB.csproj", "{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyDupFinderData", "src\rogerbriggen.myDupFinderData\MyDupFinderData.csproj", "{D08CF1B1-491D-46C9-AE37-93CC4022C7A2}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MyDupFinderData", "src\rogerbriggen.myDupFinderData\MyDupFinderData.csproj", "{D08CF1B1-491D-46C9-AE37-93CC4022C7A2}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
