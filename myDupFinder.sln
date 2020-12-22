@@ -31,6 +31,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "workflows", "workflows", "{
 		.github\workflows\build_dotnet5.yml = .github\workflows\build_dotnet5.yml
 	EndProjectSection
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MyDupFinderDB", "src\rogerbriggen.myDupFinderDB\MyDupFinderDB.csproj", "{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyDupFinderData", "src\rogerbriggen.myDupFinderData\MyDupFinderData.csproj", "{D08CF1B1-491D-46C9-AE37-93CC4022C7A2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -49,6 +53,14 @@ Global
 		{E645F273-2E0A-4E9D-B9BB-24FE12F64325}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E645F273-2E0A-4E9D-B9BB-24FE12F64325}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E645F273-2E0A-4E9D-B9BB-24FE12F64325}.Release|Any CPU.Build.0 = Release|Any CPU
+		{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D08CF1B1-491D-46C9-AE37-93CC4022C7A2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D08CF1B1-491D-46C9-AE37-93CC4022C7A2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D08CF1B1-491D-46C9-AE37-93CC4022C7A2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D08CF1B1-491D-46C9-AE37-93CC4022C7A2}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -58,6 +70,8 @@ Global
 		{878FB644-520B-4B5F-91DF-BFEB17F6F2C8} = {D4DF4AE2-AC71-450B-8854-AD525595C78C}
 		{E645F273-2E0A-4E9D-B9BB-24FE12F64325} = {FA32D65B-98C5-4E76-A786-FC65A5241C3A}
 		{6C5C0B0F-DA6D-4307-9001-740930A48339} = {58701386-6FDB-4EB7-80E2-96EB9EC96FDC}
+		{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D} = {FA32D65B-98C5-4E76-A786-FC65A5241C3A}
+		{D08CF1B1-491D-46C9-AE37-93CC4022C7A2} = {FA32D65B-98C5-4E76-A786-FC65A5241C3A}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {FB1D38F4-3727-4C54-8AEF-06436E23177D}

@@ -1,6 +1,6 @@
 ﻿using System.Collections.Generic;
 
-namespace RogerBriggen.MyDupFinderLib
+namespace RogerBriggen.MyDupFinderData
 {
     public class MyDupFinderProjectDTO
     {
@@ -13,5 +13,25 @@ namespace RogerBriggen.MyDupFinderLib
         public List<MyDupFinderScanJobDTO> MyDupFinderScanJobDTOs { get; }
         public List<MyDupFinderCheckJobDTO> MyDupFinderCheckJobDTOs { get; }
         public List<MyDupFinderFindDupsJobDTO> MyDupFinderFindDupsJobDTOs { get; }
+
+
+        public static void CheckSanity(MyDupFinderProjectDTO dto)
+        {
+            foreach (MyDupFinderScanJobDTO scanJobDto in dto.MyDupFinderScanJobDTOs)
+            {
+                MyDupFinderScanJobDTO.CheckSanity(scanJobDto);
+            }
+        }
+
+
+        public static void FixDto(MyDupFinderProjectDTO dto)
+        {
+            foreach (MyDupFinderScanJobDTO scanJobDto in dto.MyDupFinderScanJobDTOs)
+            {
+                MyDupFinderScanJobDTO.FixDto(scanJobDto);
+            }
+        }
     }
+
+   
 }

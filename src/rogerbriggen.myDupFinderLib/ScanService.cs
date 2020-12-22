@@ -2,6 +2,7 @@
 using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RogerBriggen.MyDupFinderData;
 
 namespace RogerBriggen.MyDupFinderLib
 {
@@ -42,7 +43,7 @@ namespace RogerBriggen.MyDupFinderLib
             _serviceProvider = serviceProvider;
         }
 
-        public void StartScan(string basePath, string originComputer, string dbPathAndFilename)
+        public void StartScan(MyDupFinderScanJobDTO scanJobDTO)
         {
             //TODO check if runner for base path exits... if not, create and add to queue
 
@@ -50,7 +51,7 @@ namespace RogerBriggen.MyDupFinderLib
             {
                 ScanState = ServiceState.running;
                 cts = new CancellationTokenSource();
-                sr = new ScanRunner(basePath, originComputer, _serviceProvider.GetService<ILogger<ScanRunner>>());
+                sr = new ScanRunner(scanJobDTO, _serviceProvider.GetService<ILogger<ScanRunner>>());
                 sr.Start(cts.Token);
             }
         }

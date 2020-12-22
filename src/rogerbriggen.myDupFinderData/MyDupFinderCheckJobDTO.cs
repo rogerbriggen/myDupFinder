@@ -1,4 +1,4 @@
-﻿namespace RogerBriggen.MyDupFinderLib
+﻿namespace RogerBriggen.MyDupFinderData
 {
     public class MyDupFinderCheckJobDTO
     {

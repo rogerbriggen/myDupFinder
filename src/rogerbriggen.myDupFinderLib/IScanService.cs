@@ -1,4 +1,5 @@
 ﻿using System;
+using RogerBriggen.MyDupFinderData;
 
 namespace RogerBriggen.MyDupFinderLib
 {
@@ -18,7 +19,7 @@ namespace RogerBriggen.MyDupFinderLib
         event EventHandler<ServiceState>? ScanStateChanged;
 
         void Dispose();
-        void StartScan(string basePath, string originComputer, string dbPathAndFilename);
+        void StartScan(MyDupFinderScanJobDTO scanJobDTO);
         void StopScan(string basePath);
     }
 }

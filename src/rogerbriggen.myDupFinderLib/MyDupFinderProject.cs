@@ -1,18 +1,19 @@
 ﻿using System.Diagnostics.Contracts;
 using System.IO;
 using System.Xml;
+using RogerBriggen.MyDupFinderData;
 
 namespace RogerBriggen.MyDupFinderLib
 {
     public static class MyDupFinderProject
     {
-        public static void ReadConfigurationFromFile(string pathAndFilename, out MyDupFinderProjectDTO myDupFinderProjetDTO)
+        public static void ReadConfigurationFromFile(string pathAndFilename, out MyDupFinderProjectDTO? myDupFinderProjetDTO)
         {
             System.Xml.Serialization.XmlSerializer x = new System.Xml.Serialization.XmlSerializer(typeof(MyDupFinderProjectDTO));
             using (var stream = new FileStream(pathAndFilename, FileMode.Open, FileAccess.Read))
             using (var reader = XmlReader.Create(stream, null))
             {
-                myDupFinderProjetDTO = (MyDupFinderProjectDTO)x.Deserialize(reader);
+                myDupFinderProjetDTO = (MyDupFinderProjectDTO?)x.Deserialize(reader);
             }
         }
 
@@ -37,6 +38,9 @@ namespace RogerBriggen.MyDupFinderLib
             myDupFinderScanJobDTO.JobName = "Example scanjob name";
             myDupFinderScanJobDTO.OriginComputer = "E6600";
             myDupFinderScanJobDTO.BasePath = @"m:\Test";
+            myDupFinderScanJobDTO.ScanName = "Backup of old computer";
+            myDupFinderScanJobDTO.DatabaseFile = @"m:\finddupdb\base.db";
+            myDupFinderScanJobDTO.ReportName = @"m:\finddupdb\myScanReport.txt";
             myDupFinderProjectDTO.MyDupFinderScanJobDTOs.Add(myDupFinderScanJobDTO);
 
             //check
@@ -53,6 +57,7 @@ namespace RogerBriggen.MyDupFinderLib
             myDupFinderFindDupsJobDTO.FindDupsMode = MyDupFinderFindDupsJobDTO.EFindDupsMode.FindOnlyDups;
             myDupFinderFindDupsJobDTO.DatabaseFileBase = @"m:\finddupdb\base.db";
             myDupFinderFindDupsJobDTO.DatabaseFile = @"m:\finddupdb\newdb.db";
+            myDupFinderFindDupsJobDTO.ReportName = @"m:\finddupdb\myFindReport.txt";
             myDupFinderProjectDTO.MyDupFinderFindDupsJobDTOs.Add(myDupFinderFindDupsJobDTO);
         }
     }

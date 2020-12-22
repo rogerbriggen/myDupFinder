@@ -5,6 +5,7 @@ using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RogerBriggen.MyDupFinderData;
 using RogerBriggen.MyDupFinderLib;
 using Serilog;
 
@@ -24,6 +25,7 @@ namespace RogerBriggen.MyDupFinder
             var assembly = typeof(Program).Assembly;
             logger.LogInformation($"Application with version {assembly.GetName().Version}  ({ThisAssembly.AssemblyInformationalVersion}) started...");
 
+
             //Do stuff
             //Scan commandline
             if (args.Length == 2)
@@ -31,26 +33,68 @@ namespace RogerBriggen.MyDupFinder
                 CultureInfo ci = new CultureInfo("");
                 if (args[0].ToLower(ci) == "exampleproject")
                 {
-                    MyDupFinderProjectDTO dto;
-                    MyDupFinderProject.getExampleDTO(out dto);
-                    MyDupFinderProject.WriteConfigurationToFile(dto, args[1]);
+                    try
+                    {
+                        MyDupFinderProjectDTO dto;
+                        MyDupFinderProject.getExampleDTO(out dto);
+                        MyDupFinderProject.WriteConfigurationToFile(dto, args[1]);
+                        logger.LogInformation($"Example project file succesfully written! {args[1]}");
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, $"Example project file could not be written! {args[1]}");
+                    }
+                    
                 }
                 else if (args[0].ToLower(ci) == "dryrun")
                 {
-                    MyDupFinderProjectDTO dto;
-                    MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
+                    try
+                    {
+                        MyDupFinderProjectDTO? dto;
+                        MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
+                        logger.LogInformation($"Example project file succesfully read! {args[1]}");
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, $"Example project file could not be read! {args[1]}");
+                    }
+                    
                 }
                 else if (args[0].ToLower(ci) == "run")
                 {
-                    MyDupFinderProjectDTO dto;
-                    MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
-                    foreach (MyDupFinderScanJobDTO scanDto in dto.MyDupFinderScanJobDTOs)
-                    {
-                        using (var scanService = serviceProvider.GetService<ScanService>())
+                    try
+                    { 
+                        MyDupFinderProjectDTO? dto;
+                        MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
+                        if (dto is null)
                         {
-                            logger.LogInformation("Running {JobName}...", scanDto.JobName);
-                            scanService.StartScan(scanDto.BasePath, scanDto.OriginComputer, scanDto.DatabaseFile);
+                            logger.LogError("Could not read Project file");
+                            return;
                         }
+
+                        //Check and fix config
+                        MyDupFinderProjectDTO.CheckSanity(dto);
+                        MyDupFinderProjectDTO.FixDto(dto);
+                        
+
+                        foreach (MyDupFinderScanJobDTO scanDto in dto.MyDupFinderScanJobDTOs)
+                        {
+                            using (var scanService = serviceProvider.GetService<ScanService>())
+                            {
+                                if (scanService is null)
+                                {
+                                    logger.LogError("No scanService registered!");
+                                    return;
+                                }
+                                logger.LogInformation("Running {JobName}...", scanDto.JobName);
+                                scanService.StartScan(scanDto);
+                            }
+                        }
+                        logger.LogInformation("Job finished succesfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, $"Exception during run of the job...! {args[1]}");
                     }
                 }
                 else

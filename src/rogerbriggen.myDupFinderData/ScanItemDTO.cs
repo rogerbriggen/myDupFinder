@@ -4,10 +4,15 @@
 using System;
 using System.IO;
 
-namespace RogerBriggen.MyDupFinderLib
+namespace RogerBriggen.MyDupFinderData
 {
-    public class ScanItem
+    public class ScanItemDto
     {
+        /// <summary>
+        /// ID for database (Primary Key)
+        /// </summary>
+        public Guid Id { get; set; }
+        
         /// <summary>
         /// The complete path to the file.
         /// </summary>
@@ -37,6 +42,11 @@ namespace RogerBriggen.MyDupFinderLib
         /// Gets or Sets the computer name, where the file is located. (User provided)
         /// </summary>
         public string OriginComputer { get; set; } = string.Empty;
+
+        /// <summary>
+        /// User provided Name for the scan (i.e original, backup of xxx...)
+        /// </summary>
+        public string ScanName { get; set; } = string.Empty;
 
         public long FileSize { get; set; }
 

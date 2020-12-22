@@ -8,6 +8,9 @@ using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using RogerBriggen.MyDupFinderData;
+using RogerBriggen.MyDupFinderDB;
 
 namespace RogerBriggen.MyDupFinderLib
 {
@@ -30,34 +33,41 @@ namespace RogerBriggen.MyDupFinderLib
             }
         }
 
-        public ScanRunner(string basePath, string originComputer, ILogger<ScanRunner> logger)
+        public ScanRunner(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunner>? logger)
         {
             ScanState = ServiceState.idle;
-            BasePath = basePath;
-            OriginComputer = originComputer;
-            _logger = logger;
+            ScanJobDTO = scanJobDTO;
+            _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanRunner>();
+            ScanJobDBInserts = new ScanJobDBInserts();
         }
 
         public event EventHandler<int>? ScanProgressChanged;
         public event EventHandler<ServiceState>? ScanStateChanged;
 
-        private string BasePath { get; set; }
-
-        private string OriginComputer { get; set; }
+        private MyDupFinderScanJobDTO ScanJobDTO { get; set; }
 
         private readonly ILogger<ScanRunner> _logger;
 
         private ServiceState _scanState;
 
+        private ScanJobDBInserts ScanJobDBInserts { get; set; }
+
         private CancellationToken CancelToken { get; set; }
 
-        private BlockingCollection<ScanItem> _scanItemCollection = new BlockingCollection<ScanItem>();
-        private ConcurrentQueue<ScanItem> _finishedScanItemCollection = new ConcurrentQueue<ScanItem>();
-        private ConcurrentQueue<ScanItem> _failedScanItemCollection = new ConcurrentQueue<ScanItem>();
+        private BlockingCollection<ScanItemDto> _scanItemCollection = new BlockingCollection<ScanItemDto>();
+        //private ConcurrentQueue<ScanItem> _finishedScanItemCollection = new ConcurrentQueue<ScanItem>();
+
+        private ConcurrentQueue<ScanItemDto> _failedScanItemCollection = new ConcurrentQueue<ScanItemDto>();
         private bool _disposedValue;
 
         public void Start(CancellationToken token)
         {
+            if (ScanState != ServiceState.idle)
+            {
+                throw new InvalidOperationException("ScanRunner is not in state idle!");
+            }
+            //Setup DB
+            ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile);
             CancelToken = token;
             ScanState = ServiceState.running;
             Scan();
@@ -72,7 +82,7 @@ namespace RogerBriggen.MyDupFinderLib
                                               {
                                                   ParallelOptions po = new ParallelOptions();
                                                   po.CancellationToken = CancelToken;
-                                                  var loopResult = Parallel.ForEach<ScanItem>(_scanItemCollection.GetConsumingEnumerable(), po, (item, loopState, _) =>
+                                                  var loopResult = Parallel.ForEach<ScanItemDto>(_scanItemCollection.GetConsumingEnumerable(), po, (item, loopState, _) =>
                                                   {
                                                       try
                                                       {
@@ -81,7 +91,7 @@ namespace RogerBriggen.MyDupFinderLib
                                                               using (var stream = File.OpenRead(item.FilenameAndPath))
                                                               {
                                                                   item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
-                                                                  _finishedScanItemCollection.Enqueue(item);
+                                                                  ScanJobDBInserts.Enqueue(item);
                                                                   _logger.LogInformation("File {file} successfull finished", item.FilenameAndPath);
                                                               }
                                                           }
@@ -95,10 +105,10 @@ namespace RogerBriggen.MyDupFinderLib
                                                       }
 
                                                   });
-                                                  _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", _finishedScanItemCollection.Count, _failedScanItemCollection.Count, _scanItemCollection.Count);
+                                                  _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalCount, _failedScanItemCollection.Count, _scanItemCollection.Count);
                                                   ScanState = ServiceState.finished;
                                               });
-                var files = Directory.EnumerateFiles(BasePath, "*", SearchOption.AllDirectories);
+                var files = Directory.EnumerateFiles(ScanJobDTO.BasePath, "*", SearchOption.AllDirectories);
                 foreach (string currentFile in files)
                 {
                     if (CancelToken.IsCancellationRequested)
@@ -109,15 +119,18 @@ namespace RogerBriggen.MyDupFinderLib
                     }
                     try
                     {
-                        ScanItem si = new ScanItem();
-                        si.PathBase = BasePath;
-                        si.FilenameAndPath = currentFile;
-                        si.FirstScanDateUTC = DateTime.UtcNow;
-                        si.OriginComputer = OriginComputer;
-                        si.ScanExecutionComputer = Environment.MachineName;
-                        si.FileCreationUTC = File.GetCreationTimeUtc(currentFile);
-                        si.FileLastModificationUTC = File.GetLastWriteTimeUtc(currentFile);
-                        si.FileSize = new FileInfo(currentFile).Length;
+                        ScanItemDto si = new ScanItemDto
+                        {
+                            PathBase = ScanJobDTO.BasePath,
+                            FilenameAndPath = currentFile,
+                            FirstScanDateUTC = DateTime.UtcNow,
+                            OriginComputer = ScanJobDTO.OriginComputer,
+                            ScanName = ScanJobDTO.ScanName,
+                            ScanExecutionComputer = Environment.MachineName,
+                            FileCreationUTC = File.GetCreationTimeUtc(currentFile),
+                            FileLastModificationUTC = File.GetLastWriteTimeUtc(currentFile),
+                            FileSize = new FileInfo(currentFile).Length
+                        };
                         _scanItemCollection.TryAdd(si, -1, CancelToken);
 
                     }
