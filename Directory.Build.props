@@ -2,7 +2,7 @@
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <PackageReference Include="Nerdbank.GitVersioning">
-      <Version>3.2.31</Version>
+      <Version>3.3.37</Version>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
   </ItemGroup>
@@ -18,8 +18,8 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
 
-    <!-- use c# 8.0 and enable nullable -->
-    <LangVersion>8.0</LangVersion>
+    <!-- use c# 9.0 and enable nullable -->
+    <LangVersion>9.0</LangVersion>
     <Nullable>enable</Nullable>
     <WarningsAsErrors>nullable</WarningsAsErrors>
   </PropertyGroup>

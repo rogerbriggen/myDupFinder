@@ -3,7 +3,6 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <RootNamespace>RogerBriggen.myDupFinderDB</RootNamespace>
-    <LangVersion>9.0</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
