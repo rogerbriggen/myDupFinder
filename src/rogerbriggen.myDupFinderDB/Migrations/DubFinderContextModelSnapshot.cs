@@ -16,7 +16,61 @@ namespace RogerBriggen.myDupFinderDB.Migrations
             modelBuilder
                 .HasAnnotation("ProductVersion", "5.0.1");
 
-            modelBuilder.Entity("RogerBriggen.MyDupFinderLib.ScanItem", b =>
+            modelBuilder.Entity("RogerBriggen.MyDupFinderData.ScanErrorItemDto", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("DateRunStartedUTC")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("ErrorOccurrence")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("FileCreationUTC")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("FileLastModificationUTC")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("FileSize")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Filename")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FilenameAndPath")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MyException")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("OriginComputer")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PathBase")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ScanExecutionComputer")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ScanName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ScanErrorItems");
+                });
+
+            modelBuilder.Entity("RogerBriggen.MyDupFinderData.ScanItemDto", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()

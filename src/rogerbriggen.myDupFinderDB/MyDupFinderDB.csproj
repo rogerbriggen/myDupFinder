@@ -18,4 +18,8 @@
     <ProjectReference Include="..\rogerbriggen.myDupFinderData\MyDupFinderData.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Migrations\" />
+  </ItemGroup>
+
 </Project>

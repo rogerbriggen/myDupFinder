@@ -12,8 +12,8 @@ jobs:
     runs-on: windows-latest
 
     env:
-      DOTNET_VERSION: 3.1.301
-      RELEASE_SUBDIR: netcoreapp3.1
+      DOTNET_VERSION: 5.0.101
+      RELEASE_SUBDIR: net5.0
 
     steps:
     - name: Checkout

@@ -7,21 +7,16 @@ namespace RogerBriggen.MyDupFinderData
 {
     public class ParameterException : SystemException
     {
-        public string ParamName { get; }
         
-        public ParameterException()
+     
+        public ParameterException(String message) : base(message)
         {
-            ParamName = "";
+            
         }
 
-        public ParameterException(String message, String paramName) : base(message)
+        public ParameterException(String message, Exception innerException) : base(message, innerException)
         {
-            ParamName = paramName;
-        }
-
-        public ParameterException(String message, String paramName, Exception innerException) : base(message, innerException)
-        {
-            ParamName = paramName;
+            
         }
     }
 }

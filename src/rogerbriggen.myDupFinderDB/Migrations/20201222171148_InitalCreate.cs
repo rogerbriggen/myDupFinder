@@ -3,10 +3,33 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace RogerBriggen.myDupFinderDB.Migrations
 {
-    public partial class InitialCreate : Migration
+    public partial class InitalCreate : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.CreateTable(
+                name: "ScanErrorItems",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
+                    FilenameAndPath = table.Column<string>(type: "TEXT", nullable: false),
+                    Filename = table.Column<string>(type: "TEXT", nullable: false),
+                    PathBase = table.Column<string>(type: "TEXT", nullable: false),
+                    ScanExecutionComputer = table.Column<string>(type: "TEXT", nullable: false),
+                    OriginComputer = table.Column<string>(type: "TEXT", nullable: false),
+                    ScanName = table.Column<string>(type: "TEXT", nullable: false),
+                    FileSize = table.Column<long>(type: "INTEGER", nullable: false),
+                    FileCreationUTC = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    FileLastModificationUTC = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    ErrorOccurrence = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    MyException = table.Column<string>(type: "TEXT", nullable: false),
+                    DateRunStartedUTC = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ScanErrorItems", x => x.Id);
+                });
+
             migrationBuilder.CreateTable(
                 name: "ScanItems",
                 columns: table => new
@@ -49,6 +72,9 @@ namespace RogerBriggen.myDupFinderDB.Migrations
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropTable(
+                name: "ScanErrorItems");
+
             migrationBuilder.DropTable(
                 name: "ScanItems");
         }

@@ -19,6 +19,12 @@ namespace RogerBriggen.MyDupFinderDB
         /// </summary>
         public DbSet<ScanItemDto>? ScanItems { get; set; }
 
+        /// <summary>
+        /// Errors during scanning files
+        /// </summary>
+        public DbSet<ScanErrorItemDto>? ScanErrorItems { get; set; }
+
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             

@@ -55,10 +55,10 @@ namespace RogerBriggen.MyDupFinderLib
         private CancellationToken CancelToken { get; set; }
 
         private BlockingCollection<ScanItemDto> _scanItemCollection = new BlockingCollection<ScanItemDto>();
-        //private ConcurrentQueue<ScanItem> _finishedScanItemCollection = new ConcurrentQueue<ScanItem>();
-
-        private ConcurrentQueue<ScanItemDto> _failedScanItemCollection = new ConcurrentQueue<ScanItemDto>();
+        
         private bool _disposedValue;
+
+        private DateTime _runStarted;
 
         public void Start(CancellationToken token)
         {
@@ -70,8 +70,10 @@ namespace RogerBriggen.MyDupFinderLib
             ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile);
             CancelToken = token;
             ScanState = ServiceState.running;
+            _runStarted = DateTime.UtcNow;
             Scan();
             Console.ReadKey();
+            ScanJobDBInserts.Dispose();
         }
 
         private void Scan()
@@ -100,12 +102,12 @@ namespace RogerBriggen.MyDupFinderLib
                                                       catch (Exception e)
 #pragma warning restore CA1031 // Keine allgemeinen Ausnahmetypen abfangen
                                                       {
-                                                          _failedScanItemCollection.Enqueue(item);
+                                                          ScanJobDBInserts.Enqueue(new ScanErrorItemDto(item, e, _runStarted));
                                                           _logger.LogError(e, "Hashing of {file} failed.", item.FilenameAndPath);
                                                       }
 
                                                   });
-                                                  _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalCount, _failedScanItemCollection.Count, _scanItemCollection.Count);
+                                                  _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalSuccessCount, ScanJobDBInserts.TotalErrorCount, _scanItemCollection.Count);
                                                   ScanState = ServiceState.finished;
                                               });
                 var files = Directory.EnumerateFiles(ScanJobDTO.BasePath, "*", SearchOption.AllDirectories);
@@ -119,11 +121,15 @@ namespace RogerBriggen.MyDupFinderLib
                     }
                     try
                     {
+                        DateTime currDate = DateTime.UtcNow;
                         ScanItemDto si = new ScanItemDto
                         {
                             PathBase = ScanJobDTO.BasePath,
                             FilenameAndPath = currentFile,
-                            FirstScanDateUTC = DateTime.UtcNow,
+                            
+                            FirstScanDateUTC = currDate,
+                            LastScanDateUTC = currDate,
+                            LastSha512ScanDateUTC = currDate,
                             OriginComputer = ScanJobDTO.OriginComputer,
                             ScanName = ScanJobDTO.ScanName,
                             ScanExecutionComputer = Environment.MachineName,

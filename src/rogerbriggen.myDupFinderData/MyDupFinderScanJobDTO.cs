@@ -20,40 +20,40 @@
             //Rule: BasePath, DatabaseFile, scanName, OriginComputer and JobName may not be null
             if (string.IsNullOrWhiteSpace(dto.JobName))
             {
-                throw new ParameterException("Param may not be null or empty", "JobName");
+                throw new ParameterException("Param JobName may not be null or empty");
             }
             if (string.IsNullOrWhiteSpace(dto.OriginComputer))
             {
-                throw new ParameterException("Param may not be null or empty", "OriginComputer");
+                throw new ParameterException("Param OriginComputer may not be null or empty");
             }
             if (string.IsNullOrWhiteSpace(dto.ScanName))
             {
-                throw new ParameterException("Param may not be null or empty", "ScanName");
+                throw new ParameterException("Param ScanName may not be null or empty");
             }
             if (string.IsNullOrWhiteSpace(dto.BasePath))
             {
-                throw new ParameterException("Param may not be null or empty", "BasePath");
+                throw new ParameterException("Param BasePath may not be null or empty");
             }
             if (string.IsNullOrWhiteSpace(dto.DatabaseFile))
             {
-                throw new ParameterException("Param may not be null or empty", "DatabaseFile");
+                throw new ParameterException("Param DatabaseFile may not be null or empty");
             }
 
             //Rule: BasePath must exist
             if (!System.IO.Directory.Exists(dto.BasePath))
             {
-                throw new ParameterException("BasePath must exist", dto.BasePath);
+                throw new ParameterException($"BasePath must exist! {dto.BasePath}");
             }
 
             //Rule: DatabaseFile and ReportFile are not allowed below the BasePath
             string basePath = FileHelper.AddDirectoryDelimiter(dto.BasePath);
             if (dto.DatabaseFile.StartsWith(basePath))
             {
-                throw new ParameterException("Param may not be a subdirectory of BasePath!", "DatabaseFile");
+                throw new ParameterException("Param DatabaseFile may not be a subdirectory of BasePath!");
             }
             if (dto.ReportName.StartsWith(basePath))
             {
-                throw new ParameterException("Param may not be a subdirectory of BasePath!", "ReportName");
+                throw new ParameterException("Param ReportName may not be a subdirectory of BasePath!");
             }
         }
 
