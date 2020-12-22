@@ -7,8 +7,12 @@ Build with latest dotnet relased:   ![.NET Core](https://github.com/rogerbriggen
 
 ## Roadmap:
 - :heavy_check_mark: Scan Files and generate hash information
-- :heavy_check_mark: Store all the file and hash information in a db
+- :heavy_check_mark: Parallelize scan to all cores
+- :heavy_check_mark: Store all the file and hash information in a sqlite db
 - Find dups in one database
+    ```sql
+    SELECT * FROM ScanItems WHERE FileSha512Hash IN (SELECT FileSha512Hash FROM ScanItems GROUP BY FileSHA512Hash HAVING COUNT(*) >1)
+    ``` 
 - Find dups in different databases
 - Visually show the dups and manually change the state
 - Delete / Move the dups
