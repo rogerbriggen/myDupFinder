@@ -23,6 +23,7 @@ namespace RogerBriggen.MyDupFinderDB
         private const bool _recreateContext = true; //Its faster to create a dbIndex after a wile
         private readonly object dbContextLock = new object();
         private readonly ILogger<ScanJobDBInserts> _logger;
+        private bool _disposedValue;
         public int TotalSuccessCount { get; private set; }
         public int TotalErrorCount { get; private set; }
 
@@ -202,16 +203,41 @@ namespace RogerBriggen.MyDupFinderDB
             }
         }
 
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposedValue)
+            {
+                if (disposing)
+                {
+                    // TODO: Verwalteten Zustand (verwaltete Objekte) bereinigen
+                    if (_dbContext is not null)
+                    {
+                        lock (dbContextLock)
+                        {
+                            _dbContext.SaveChanges();
+                            _dbContext.Dispose();
+                        }
+                    }
+                }
+
+                // TODO: Nicht verwaltete Ressourcen (nicht verwaltete Objekte) freigeben und Finalizer überschreiben
+                // TODO: Große Felder auf NULL setzen
+                _disposedValue = true;
+            }
+        }
+
+        // // TODO: Finalizer nur überschreiben, wenn "Dispose(bool disposing)" Code für die Freigabe nicht verwalteter Ressourcen enthält
+        // ~ScanRunner()
+        // {
+        //     // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+        //     Dispose(disposing: false);
+        // }
+
         public void Dispose()
         {
-            if (_dbContext is not null)
-            {
-                lock (dbContextLock)
-                {
-                    _dbContext.SaveChanges();
-                    _dbContext.Dispose();
-                }
-            }
+            // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
         }
     }
 }

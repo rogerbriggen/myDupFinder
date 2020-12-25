@@ -66,7 +66,7 @@ namespace RogerBriggen.MyDupFinderLib
                     {
                         ScanJobDBInserts.WriteChanges();
                         _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
-                        RunnerState = IService.ServiceState.cancelled;
+                        RunnerState = IService.EServiceState.cancelled;
                         return;
                     }
 
@@ -110,7 +110,7 @@ namespace RogerBriggen.MyDupFinderLib
                         {
                             ScanJobDBInserts.WriteChanges();
                             _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
-                            RunnerState = IService.ServiceState.cancelled;
+                            RunnerState = IService.EServiceState.cancelled;
                             return;
                         }
 
@@ -123,7 +123,7 @@ namespace RogerBriggen.MyDupFinderLib
                     _logger.LogDebug($"Scanning... FileEnumeration currentCount={_enumerateFiles.CurrentCount}  errorCount={_enumerateFiles.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
                 }
                 ScanJobDBInserts.WriteChanges();
-                RunnerState = IService.ServiceState.finished;
+                RunnerState = IService.EServiceState.finished;
                 _logger.LogInformation($"Scanning finished... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
             }
             catch (Exception ex)

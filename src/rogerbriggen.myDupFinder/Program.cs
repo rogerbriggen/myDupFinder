@@ -77,7 +77,7 @@ namespace RogerBriggen.MyDupFinder
                         MyDupFinderProjectDTO.CheckSanity(dto);
                         MyDupFinderProjectDTO.FixDto(dto);
                         
-
+                        //Scan Jobs
                         foreach (MyDupFinderScanJobDTO scanDto in dto.MyDupFinderScanJobDTOs)
                         {
                             using (var scanService = serviceProvider.GetService<ScanService>())
@@ -93,39 +93,31 @@ namespace RogerBriggen.MyDupFinder
                                 t.Name = "ScanService";
                                 t.Start();
                                 //Wait for t or for a key press
-                                while (true)
-                                {
-                                    //Check for key
-                                    if (Console.KeyAvailable)
-                                    {
-                                        var key = Console.ReadKey();
-                                        if (key.Key == ConsoleKey.Enter)
-                                        {
-                                            //Cancel...
-                                            scanService.Stop();
-                                        }
-                                    }
-                                    //Check for Thread
-                                    if (!t.IsAlive)
-                                    {
-                                        //We are done...
-                                        if (scanService.ScanState == IService.ServiceState.finished)
-                                        {
-                                            logger.LogInformation("Scan Job {JobName} finished!", scanDto.JobName);
-                                        }
-                                        else if (scanService.ScanState == IService.ServiceState.cancelled)
-                                        {
-                                            logger.LogInformation("Scan Job {JobName} cancelled!", scanDto.JobName);
-                                        }
-                                        break;
-                                    }
-                                    //Breath...
-                                    System.Threading.Thread.Sleep(100);
-                                }
-                                //scanService.StartScan(scanDto);
-
+                                WaitForThreadOrKeyPress(logger, scanDto.JobName, scanService, t);
                             }
                         }
+
+                        //Find Dups Jobs
+                        foreach (MyDupFinderFindDupsJobDTO findDupsDto in dto.MyDupFinderFindDupsJobDTOs)
+                        {
+                            using (var findDupsService = serviceProvider.GetService<FindDupsService>())
+                            {
+                                if (findDupsService is null)
+                                {
+                                    logger.LogError("No scanService registered!");
+                                    return;
+                                }
+                                logger.LogInformation("Running Job {JobName}...", findDupsDto.JobName);
+                                ThreadStart ts = delegate { findDupsService.Start(findDupsDto); };
+                                var t = new Thread(ts);
+                                t.Name = "ScanService";
+                                t.Start();
+                                //Wait for t or for a key press
+                                WaitForThreadOrKeyPress(logger, findDupsDto.JobName, findDupsService, t);
+                            }
+                        }
+
+
                         logger.LogInformation("All Jobs finished");
                     }
                     catch (Exception ex)
@@ -148,6 +140,39 @@ namespace RogerBriggen.MyDupFinder
 
             // Use for Microsoft logger.... for serilog, we do it with AppDomain.CurrentDomain.ProcessExit
             // serviceProvider.Dispose();
+        }
+
+        private static void WaitForThreadOrKeyPress(ILogger<Program>? logger, string jobName, IService service, Thread t)
+        {
+            while (true)
+            {
+                //Check for key
+                if (Console.KeyAvailable)
+                {
+                    var key = Console.ReadKey();
+                    if (key.Key == ConsoleKey.Enter)
+                    {
+                        //Cancel...
+                        service.Stop();
+                    }
+                }
+                //Check for Thread
+                if (!t.IsAlive)
+                {
+                    //We are done...
+                    if (service.ServiceState == IService.EServiceState.finished)
+                    {
+                        logger.LogInformation("Scan Job {JobName} finished!", jobName);
+                    }
+                    else if (service.ServiceState == IService.EServiceState.cancelled)
+                    {
+                        logger.LogInformation("Scan Job {JobName} cancelled!", jobName);
+                    }
+                    break;
+                }
+                //Breath...
+                System.Threading.Thread.Sleep(100);
+            }
         }
 
         private static void ShowHelp()
@@ -211,6 +236,7 @@ namespace RogerBriggen.MyDupFinder
                 services.AddLogging(loggingBuilder => loggingBuilder.AddSerilog(dispose: true));
             }
             services.AddTransient<ScanService>();
+            services.AddTransient<FindDupsService>();
 
 
             Log.Information("**** Opening log... ****");

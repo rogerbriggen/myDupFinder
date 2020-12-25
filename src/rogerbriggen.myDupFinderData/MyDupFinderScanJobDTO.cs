@@ -12,7 +12,7 @@
 
         public string DatabaseFile { get; set; } = string.Empty;
 
-        public string ReportName { get; set; } = string.Empty;
+        public string ReportPath { get; set; } = string.Empty;
 
 
         public static void CheckSanity(MyDupFinderScanJobDTO dto)
@@ -45,15 +45,15 @@
                 throw new ParameterException($"BasePath must exist! {dto.BasePath}");
             }
 
-            //Rule: DatabaseFile and ReportFile are not allowed below the BasePath
+            //Rule: DatabaseFile and ReportPath are not allowed below the BasePath
             string basePath = FileHelper.AddDirectoryDelimiter(dto.BasePath);
             if (dto.DatabaseFile.StartsWith(basePath))
             {
                 throw new ParameterException("Param DatabaseFile may not be a subdirectory of BasePath!");
             }
-            if (dto.ReportName.StartsWith(basePath))
+            if (dto.ReportPath.StartsWith(basePath))
             {
-                throw new ParameterException("Param ReportName may not be a subdirectory of BasePath!");
+                throw new ParameterException("Param ReportPath may not be a subdirectory of BasePath!");
             }
         }
 
@@ -61,6 +61,9 @@
         {
             // Rule: Make sure the base path has a delimiter at the end
             dto.BasePath = FileHelper.AddDirectoryDelimiter(dto.BasePath);
+
+            // Rule: Make sure the ReportPath path has a delimiter at the end
+            dto.ReportPath = FileHelper.AddDirectoryDelimiter(dto.ReportPath);
         }
     }
 }

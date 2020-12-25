@@ -17,9 +17,15 @@ namespace RogerBriggen.MyDupFinderData
 
         public static void CheckSanity(MyDupFinderProjectDTO dto)
         {
+            var scanDBs = new List<string>();
             foreach (MyDupFinderScanJobDTO scanJobDto in dto.MyDupFinderScanJobDTOs)
             {
                 MyDupFinderScanJobDTO.CheckSanity(scanJobDto);
+                scanDBs.Add(scanJobDto.DatabaseFile);
+            }
+            foreach (MyDupFinderFindDupsJobDTO findDupsJobDto in dto.MyDupFinderFindDupsJobDTOs)
+            {
+                MyDupFinderFindDupsJobDTO.CheckSanity(findDupsJobDto, scanDBs);
             }
         }
 
@@ -29,6 +35,10 @@ namespace RogerBriggen.MyDupFinderData
             foreach (MyDupFinderScanJobDTO scanJobDto in dto.MyDupFinderScanJobDTOs)
             {
                 MyDupFinderScanJobDTO.FixDto(scanJobDto);
+            }
+            foreach (MyDupFinderFindDupsJobDTO findDupsJobDto in dto.MyDupFinderFindDupsJobDTOs)
+            {
+                MyDupFinderFindDupsJobDTO.FixDto(findDupsJobDto);
             }
         }
     }

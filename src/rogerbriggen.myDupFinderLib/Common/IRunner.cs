@@ -8,10 +8,10 @@ namespace RogerBriggen.MyDupFinderLib
 {
     public interface IRunner
     {
-        IService.ServiceState RunnerState { get; set; }
+        IService.EServiceState RunnerState { get; set; }
 
         event EventHandler<int>? RunnerProgressChanged;
-        event EventHandler<IService.ServiceState>? RunnerStateChanged;
+        event EventHandler<IService.EServiceState>? RunnerStateChanged;
 
         void Dispose();
         void Start(CancellationToken token);

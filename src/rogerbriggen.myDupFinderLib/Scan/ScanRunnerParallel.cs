@@ -79,7 +79,7 @@ namespace RogerBriggen.MyDupFinderLib
 
                                                   });
                                                   _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalSuccessCount, ScanJobDBInserts.TotalErrorCount, _scanItemCollection.Count);
-                                                  RunnerState = IService.ServiceState.finished;
+                                                  RunnerState = IService.EServiceState.finished;
                                               });
                 var files = Directory.EnumerateFiles(ScanJobDTO.BasePath, "*", SearchOption.AllDirectories);
                 foreach (string currentFile in files)

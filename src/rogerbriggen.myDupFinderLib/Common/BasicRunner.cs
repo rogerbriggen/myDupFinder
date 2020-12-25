@@ -14,7 +14,7 @@ namespace RogerBriggen.MyDupFinderLib
     internal class BasicRunner<T> : IDisposable, IRunner
     {
 
-        public IService.ServiceState RunnerState
+        public IService.EServiceState RunnerState
         {
             get => _scanState;
             set
@@ -31,19 +31,19 @@ namespace RogerBriggen.MyDupFinderLib
 
         public BasicRunner(ILogger<T>? logger, IServiceProvider serviceProvider)
         {
-            RunnerState = IService.ServiceState.idle;
+            RunnerState = IService.EServiceState.idle;
             _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<T>();
             _serviceProvider = serviceProvider;
         }
 
         public event EventHandler<int>? RunnerProgressChanged;
-        public event EventHandler<IService.ServiceState>? RunnerStateChanged;
+        public event EventHandler<IService.EServiceState>? RunnerStateChanged;
 
 
         protected readonly ILogger<T> _logger;
         protected readonly IServiceProvider _serviceProvider;
 
-        private IService.ServiceState _scanState;
+        private IService.EServiceState _scanState;
 
         protected CancellationToken CancelToken { get; set; }
 
@@ -55,12 +55,12 @@ namespace RogerBriggen.MyDupFinderLib
 
         public virtual void Start(CancellationToken token)
         {
-            if (RunnerState != IService.ServiceState.idle)
+            if (RunnerState != IService.EServiceState.idle)
             {
                 throw new InvalidOperationException("Runner is not in state idle!");
             }
             CancelToken = token;
-            RunnerState = IService.ServiceState.running;
+            RunnerState = IService.EServiceState.running;
             _runStarted = DateTime.UtcNow;
         }
 
@@ -100,9 +100,9 @@ namespace RogerBriggen.MyDupFinderLib
             EventHandler<int>? handler = RunnerProgressChanged;
             handler?.Invoke(this, progress);
         }
-        protected virtual void OnRunnerStateChanged(IService.ServiceState state)
+        protected virtual void OnRunnerStateChanged(IService.EServiceState state)
         {
-            EventHandler<IService.ServiceState>? handler = RunnerStateChanged;
+            EventHandler<IService.EServiceState>? handler = RunnerStateChanged;
             handler?.Invoke(this, state);
         }
     }

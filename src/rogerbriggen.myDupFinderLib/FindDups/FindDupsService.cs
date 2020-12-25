@@ -7,24 +7,25 @@ namespace RogerBriggen.MyDupFinderLib
 {
 
 
-    public class ScanService : BasicService<ScanService>, IScanService
+    public class FindDupsService : BasicService<FindDupsService>, IFindDupsService
     {
         // To detect redundant calls
         private bool _disposed = false;
 
-        public ScanService(ILogger<ScanService> logger, IServiceProvider serviceProvider) : base(logger, serviceProvider)
+        public FindDupsService(ILogger<FindDupsService> logger, IServiceProvider serviceProvider) : base(logger, serviceProvider)
         {
             
         }
 
-        public void StartScan(MyDupFinderScanJobDTO scanJobDTO)
+        public void Start(MyDupFinderFindDupsJobDTO findDupsJobDTO)
         {
             //TODO check if runner for base path exits... if not, create and add to queue
 
             if (ServiceState == IService.EServiceState.idle)
             {
-                var sr = new ScanRunnerSingleThread(scanJobDTO, _serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), _serviceProvider);
-                base.Start(sr);
+                
+                var fdr = new FindDupsInSameDB(findDupsJobDTO, _serviceProvider.GetService<ILogger<FindDupsInSameDB>>(), _serviceProvider);
+                base.Start(fdr);
             }
         }
 

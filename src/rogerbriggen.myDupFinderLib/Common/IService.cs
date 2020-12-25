@@ -5,7 +5,7 @@ namespace RogerBriggen.MyDupFinderLib
 
     public interface IService
     {
-        public enum ServiceState
+        public enum EServiceState
         {
             idle,
             running,
@@ -14,9 +14,9 @@ namespace RogerBriggen.MyDupFinderLib
         }
 
         event EventHandler<int>? ServiceProgressChanged;
-        event EventHandler<ServiceState>? ServiceStateChanged;
+        event EventHandler<EServiceState>? ServiceStateChanged;
 
-        void Dispose();
+        IService.EServiceState ServiceState { get; }
 
         public abstract void Start(IRunner runner);
         public abstract void Stop();

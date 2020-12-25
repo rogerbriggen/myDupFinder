@@ -9,15 +9,15 @@ namespace RogerBriggen.MyDupFinderLib
     public abstract class BasicService<T> : IDisposable, IService
     {
 
-        private IService.ServiceState _scanState;
-        public IService.ServiceState ScanState
+        private IService.EServiceState _serviceState;
+        public IService.EServiceState ServiceState
         {
-            get => _scanState;
+            get => _serviceState;
             private set
             {
-                if (_scanState != value)
+                if (_serviceState != value)
                 {
-                    _scanState = value;
+                    _serviceState = value;
                     OnServiceStateChanged(value);
                 }
             }
@@ -31,11 +31,11 @@ namespace RogerBriggen.MyDupFinderLib
         private bool _disposedValue;
 
         public event EventHandler<int>? ServiceProgressChanged;
-        public event EventHandler<IService.ServiceState>? ServiceStateChanged;
+        public event EventHandler<IService.EServiceState>? ServiceStateChanged;
 
         public BasicService(ILogger<T> logger, IServiceProvider serviceProvider)
         {
-            ScanState = IService.ServiceState.idle;
+            ServiceState = IService.EServiceState.idle;
             _logger = logger;
             _serviceProvider = serviceProvider;
         }
@@ -43,9 +43,9 @@ namespace RogerBriggen.MyDupFinderLib
         public virtual void Start(IRunner runner)
         {
             _runner = runner;
-            if (ScanState == IService.ServiceState.idle)
+            if (ServiceState == IService.EServiceState.idle)
             {
-                ScanState = IService.ServiceState.running;
+                ServiceState = IService.EServiceState.running;
                 _cts = new CancellationTokenSource();
                 _runner.RunnerStateChanged += RunnerStateEventHandler;
                 _runner.Start(_cts.Token);
@@ -54,7 +54,7 @@ namespace RogerBriggen.MyDupFinderLib
 
         public virtual void Stop()
         {
-            if (ScanState == IService.ServiceState.running)
+            if (ServiceState == IService.EServiceState.running)
             {
                 _cts?.Cancel();
             }
@@ -96,16 +96,16 @@ namespace RogerBriggen.MyDupFinderLib
             EventHandler<int>? handler = ServiceProgressChanged;
             handler?.Invoke(this, progress);
         }
-        protected virtual void OnServiceStateChanged(IService.ServiceState state)
+        protected virtual void OnServiceStateChanged(IService.EServiceState state)
         {
-            EventHandler<IService.ServiceState>? handler = ServiceStateChanged;
+            EventHandler<IService.EServiceState>? handler = ServiceStateChanged;
             handler?.Invoke(this, state);
         }
 
-        private void RunnerStateEventHandler(object? _, IService.ServiceState runnerState)
+        private void RunnerStateEventHandler(object? _, IService.EServiceState runnerState)
         {
             _logger.LogInformation("Runner changed to state {runnerState}", runnerState);
-            ScanState = runnerState;
+            ServiceState = runnerState;
         }
     }
 }

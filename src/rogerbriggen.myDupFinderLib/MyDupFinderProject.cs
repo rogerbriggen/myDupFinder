@@ -40,7 +40,7 @@ namespace RogerBriggen.MyDupFinderLib
             myDupFinderScanJobDTO.BasePath = @"m:\Test";
             myDupFinderScanJobDTO.ScanName = "Backup of old computer";
             myDupFinderScanJobDTO.DatabaseFile = @"m:\finddupdb\base.db";
-            myDupFinderScanJobDTO.ReportName = @"m:\finddupdb\myScanReport.txt";
+            myDupFinderScanJobDTO.ReportPath = @"m:\finddupdb\";
             myDupFinderProjectDTO.MyDupFinderScanJobDTOs.Add(myDupFinderScanJobDTO);
 
             //check
@@ -57,7 +57,7 @@ namespace RogerBriggen.MyDupFinderLib
             myDupFinderFindDupsJobDTO.FindDupsMode = MyDupFinderFindDupsJobDTO.EFindDupsMode.FindOnlyDups;
             myDupFinderFindDupsJobDTO.DatabaseFileBase = @"m:\finddupdb\base.db";
             myDupFinderFindDupsJobDTO.DatabaseFile = @"m:\finddupdb\newdb.db";
-            myDupFinderFindDupsJobDTO.ReportName = @"m:\finddupdb\myFindReport.txt";
+            myDupFinderFindDupsJobDTO.ReportPath = @"m:\finddupdb\";
             myDupFinderProjectDTO.MyDupFinderFindDupsJobDTOs.Add(myDupFinderFindDupsJobDTO);
         }
     }
