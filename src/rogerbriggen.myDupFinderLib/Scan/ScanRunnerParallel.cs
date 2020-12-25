@@ -9,7 +9,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using RogerBriggen.MyDupFinderData;
 using RogerBriggen.MyDupFinderDB;
 
@@ -18,64 +17,31 @@ namespace RogerBriggen.MyDupFinderLib
     /// <summary>
     /// This will scan the files in parallel... this will almost deadlock your pc and will use your hdd to 100%...
     /// </summary>
-    internal class ScanRunnerParallel : IDisposable, IScanRunner
+    internal class ScanRunnerParallel : BasicRunner<ScanRunnerParallel>, IScanRunner
     {
 
-        public ServiceState ScanState
+        public ScanRunnerParallel(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunnerParallel>? logger, IServiceProvider serviceProvider) : base(logger, serviceProvider)
         {
-            get => _scanState;
-            set
-            {
-                if (_scanState != value)
-                {
-                    _scanState = value;
-                    OnScanStateChanged(value);
-                }
-
-
-            }
-        }
-
-        public ScanRunnerParallel(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunnerParallel>? logger, IServiceProvider serviceProvider)
-        {
-            ScanState = ServiceState.idle;
             ScanJobDTO = scanJobDTO;
-            _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanRunnerParallel>();
-            _serviceProvider = serviceProvider;
             ScanJobDBInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         }
 
-        public event EventHandler<int>? ScanProgressChanged;
-        public event EventHandler<ServiceState>? ScanStateChanged;
 
         private MyDupFinderScanJobDTO ScanJobDTO { get; set; }
 
-        private readonly ILogger<ScanRunnerParallel> _logger;
-        private readonly IServiceProvider _serviceProvider;
-
-        private ServiceState _scanState;
-
         private ScanJobDBInserts ScanJobDBInserts { get; set; }
 
-        private CancellationToken CancelToken { get; set; }
-
         private BlockingCollection<ScanItemDto> _scanItemCollection = new BlockingCollection<ScanItemDto>();
-        
-        private bool _disposedValue;
 
-        private DateTime _runStarted;
+        // To detect redundant calls
+        private bool _disposed = false;
 
-        public void Start(CancellationToken token)
+
+        public override void Start(CancellationToken token)
         {
-            if (ScanState != ServiceState.idle)
-            {
-                throw new InvalidOperationException("ScanRunner is not in state idle!");
-            }
+            base.Start(token);
             //Setup DB
-            ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile);
-            CancelToken = token;
-            ScanState = ServiceState.running;
-            _runStarted = DateTime.UtcNow;
+            ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile);       
             Scan();
             Console.ReadKey();
             ScanJobDBInserts.Dispose();
@@ -113,7 +79,7 @@ namespace RogerBriggen.MyDupFinderLib
 
                                                   });
                                                   _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalSuccessCount, ScanJobDBInserts.TotalErrorCount, _scanItemCollection.Count);
-                                                  ScanState = ServiceState.finished;
+                                                  RunnerState = IService.ServiceState.finished;
                                               });
                 var files = Directory.EnumerateFiles(ScanJobDTO.BasePath, "*", SearchOption.AllDirectories);
                 foreach (string currentFile in files)
@@ -166,45 +132,29 @@ namespace RogerBriggen.MyDupFinderLib
             _scanItemCollection.CompleteAdding();
         }
 
-        protected virtual void Dispose(bool disposing)
+
+        // Protected implementation of Dispose pattern.
+        protected override void Dispose(bool disposing)
         {
-            if (!_disposedValue)
+            if (_disposed)
             {
-                if (disposing)
-                {
-                    // TODO: Verwalteten Zustand (verwaltete Objekte) bereinigen
-                    _scanItemCollection.Dispose();
-                }
-
-                // TODO: Nicht verwaltete Ressourcen (nicht verwaltete Objekte) freigeben und Finalizer überschreiben
-                // TODO: Große Felder auf NULL setzen
-                _disposedValue = true;
+                return;
             }
+
+            if (disposing)
+            {
+                // Dispose managed state (managed objects).
+                _scanItemCollection.Dispose();
+            }
+
+            // TODO: free unmanaged resources (unmanaged objects) and override a finalizer below.
+            // TODO: set large fields to null.
+            _disposed = true;
+
+            // Call base class implementation.
+            base.Dispose(disposing);
         }
 
-        // // TODO: Finalizer nur überschreiben, wenn "Dispose(bool disposing)" Code für die Freigabe nicht verwalteter Ressourcen enthält
-        // ~ScanRunner()
-        // {
-        //     // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-        //     Dispose(disposing: false);
-        // }
 
-        public void Dispose()
-        {
-            // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-            Dispose(disposing: true);
-            GC.SuppressFinalize(this);
-        }
-
-        protected virtual void OnScanProgressChanged(int progress)
-        {
-            EventHandler<int>? handler = ScanProgressChanged;
-            handler?.Invoke(this, progress);
-        }
-        protected virtual void OnScanStateChanged(ServiceState state)
-        {
-            EventHandler<ServiceState>? handler = ScanStateChanged;
-            handler?.Invoke(this, state);
-        }
     }
 }

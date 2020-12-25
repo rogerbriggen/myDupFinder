@@ -6,12 +6,12 @@ using System.Threading;
 
 namespace RogerBriggen.MyDupFinderLib
 {
-    internal interface IScanRunner
+    public interface IRunner
     {
-        ServiceState ScanState { get; set; }
+        IService.ServiceState RunnerState { get; set; }
 
-        event EventHandler<int>? ScanProgressChanged;
-        event EventHandler<ServiceState>? ScanStateChanged;
+        event EventHandler<int>? RunnerProgressChanged;
+        event EventHandler<IService.ServiceState>? RunnerStateChanged;
 
         void Dispose();
         void Start(CancellationToken token);

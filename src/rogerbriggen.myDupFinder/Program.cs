@@ -102,18 +102,18 @@ namespace RogerBriggen.MyDupFinder
                                         if (key.Key == ConsoleKey.Enter)
                                         {
                                             //Cancel...
-                                            scanService.StopScan(scanDto.BasePath);
+                                            scanService.Stop();
                                         }
                                     }
                                     //Check for Thread
                                     if (!t.IsAlive)
                                     {
                                         //We are done...
-                                        if (scanService.ScanState == ServiceState.finished)
+                                        if (scanService.ScanState == IService.ServiceState.finished)
                                         {
                                             logger.LogInformation("Scan Job {JobName} finished!", scanDto.JobName);
                                         }
-                                        else if (scanService.ScanState == ServiceState.paused)
+                                        else if (scanService.ScanState == IService.ServiceState.cancelled)
                                         {
                                             logger.LogInformation("Scan Job {JobName} cancelled!", scanDto.JobName);
                                         }
