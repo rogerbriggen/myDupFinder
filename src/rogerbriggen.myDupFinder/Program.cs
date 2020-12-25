@@ -2,6 +2,7 @@
 using System.Diagnostics.Contracts;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -86,11 +87,46 @@ namespace RogerBriggen.MyDupFinder
                                     logger.LogError("No scanService registered!");
                                     return;
                                 }
-                                logger.LogInformation("Running {JobName}...", scanDto.JobName);
-                                scanService.StartScan(scanDto);
+                                logger.LogInformation("Running Job {JobName}...", scanDto.JobName);
+                                ThreadStart ts = delegate { scanService.StartScan(scanDto); };
+                                var t = new Thread(ts);
+                                t.Name = "ScanService";
+                                t.Start();
+                                //Wait for t or for a key press
+                                while (true)
+                                {
+                                    //Check for key
+                                    if (Console.KeyAvailable)
+                                    {
+                                        var key = Console.ReadKey();
+                                        if (key.Key == ConsoleKey.Enter)
+                                        {
+                                            //Cancel...
+                                            scanService.StopScan(scanDto.BasePath);
+                                        }
+                                    }
+                                    //Check for Thread
+                                    if (!t.IsAlive)
+                                    {
+                                        //We are done...
+                                        if (scanService.ScanState == ServiceState.finished)
+                                        {
+                                            logger.LogInformation("Scan Job {JobName} finished!", scanDto.JobName);
+                                        }
+                                        else if (scanService.ScanState == ServiceState.paused)
+                                        {
+                                            logger.LogInformation("Scan Job {JobName} cancelled!", scanDto.JobName);
+                                        }
+                                        break;
+                                    }
+                                    //Breath...
+                                    System.Threading.Thread.Sleep(100);
+                                }
+                                //scanService.StartScan(scanDto);
+
                             }
                         }
-                        logger.LogInformation("Job finished succesfully");
+                        logger.LogInformation("All Jobs finished");
                     }
                     catch (Exception ex)
                     {

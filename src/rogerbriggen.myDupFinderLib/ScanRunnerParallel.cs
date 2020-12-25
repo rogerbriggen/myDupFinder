@@ -7,6 +7,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RogerBriggen.MyDupFinderData;
@@ -14,8 +15,10 @@ using RogerBriggen.MyDupFinderDB;
 
 namespace RogerBriggen.MyDupFinderLib
 {
-
-    internal class ScanRunner : IDisposable, IScanRunner
+    /// <summary>
+    /// This will scan the files in parallel... this will almost deadlock your pc and will use your hdd to 100%...
+    /// </summary>
+    internal class ScanRunnerParallel : IDisposable, IScanRunner
     {
 
         public ServiceState ScanState
@@ -33,12 +36,13 @@ namespace RogerBriggen.MyDupFinderLib
             }
         }
 
-        public ScanRunner(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunner>? logger)
+        public ScanRunnerParallel(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunnerParallel>? logger, IServiceProvider serviceProvider)
         {
             ScanState = ServiceState.idle;
             ScanJobDTO = scanJobDTO;
-            _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanRunner>();
-            ScanJobDBInserts = new ScanJobDBInserts();
+            _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanRunnerParallel>();
+            _serviceProvider = serviceProvider;
+            ScanJobDBInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         }
 
         public event EventHandler<int>? ScanProgressChanged;
@@ -46,7 +50,8 @@ namespace RogerBriggen.MyDupFinderLib
 
         private MyDupFinderScanJobDTO ScanJobDTO { get; set; }
 
-        private readonly ILogger<ScanRunner> _logger;
+        private readonly ILogger<ScanRunnerParallel> _logger;
+        private readonly IServiceProvider _serviceProvider;
 
         private ServiceState _scanState;
 

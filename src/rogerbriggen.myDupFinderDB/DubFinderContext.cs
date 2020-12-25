@@ -34,6 +34,8 @@ namespace RogerBriggen.MyDupFinderDB
                 .HasIndex(b => b.Filename);
             modelBuilder.Entity<ScanItemDto>()
                 .HasIndex(b => b.FileSize);
+            modelBuilder.Entity<ScanItemDto>()
+                .HasIndex(b => b.FilenameAndPath);
         }
     }
 }

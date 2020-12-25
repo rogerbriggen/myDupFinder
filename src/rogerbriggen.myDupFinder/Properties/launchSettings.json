@@ -2,7 +2,7 @@
   "profiles": {
     "MyDupFinder": {
       "commandName": "Project",
-      "commandLineArgs": "run m:\\test\\test.xml"
+      "commandLineArgs": "run M:\\MyDupFinder\\o_DatenPArchiv.xml"
     }
   }
 }

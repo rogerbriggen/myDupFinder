@@ -4,7 +4,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RogerBriggen.MyDupFinderData;
 
 namespace RogerBriggen.MyDupFinderDB
@@ -19,10 +22,15 @@ namespace RogerBriggen.MyDupFinderDB
         private const int _commitCount = 100; //Save changes every 100 item
         private const bool _recreateContext = true; //Its faster to create a dbIndex after a wile
         private readonly object dbContextLock = new object();
+        private readonly ILogger<ScanJobDBInserts> _logger;
         public int TotalSuccessCount { get; private set; }
         public int TotalErrorCount { get; private set; }
 
 
+        public ScanJobDBInserts(ILogger<ScanJobDBInserts>? logger)
+        {
+            _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanJobDBInserts>();
+        }
         public void SetupDB(string databaseFile)
         {
             lock(dbContextLock)
@@ -96,6 +104,89 @@ namespace RogerBriggen.MyDupFinderDB
                     _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
                 }
             }
+        }
+
+        public bool IsEmptyScanItemTable()
+        {
+            if (_dbContext is null)
+            {
+                throw new InvalidOperationException("IsEmptyScanItemTable called without SetupDB!");
+            }
+            lock (dbContextLock)
+            {
+                var itemCount = _dbContext.ScanItems?.Count();
+                if (itemCount is null)
+                {
+                    return true;
+                }
+                else if (itemCount == 0)
+                {
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+        }
+
+        public bool IsAlreadyInDB(ScanItemDto si)
+        {
+            if (_dbContext is null)
+            {
+                throw new InvalidOperationException("IsAlreadyInDB called without SetupDB!");
+            }
+            lock (dbContextLock)
+            {
+                var itemCount = _dbContext.ScanItems?.Where(s => ((s.FilenameAndPath == si.FilenameAndPath) && (s.FileSize == si.FileSize) && (s.ScanExecutionComputer == si.ScanExecutionComputer))).Count();
+                if (itemCount is null)
+                {
+                    return false;
+                }
+                else if (itemCount == 0)
+                {
+                    return false;
+                }
+                else if (itemCount == 1)
+                {
+                    return true;
+                }
+                else
+                {
+                    //Strange
+                    _logger.LogWarning($"IsAlreadyInDB had a strange itemCount of {itemCount}...");
+                    return true;
+                }
+            }
+            
+        }
+
+        public bool IsBasePathAlreadyInDB(string basePath)
+        {
+            if (_dbContext is null)
+            {
+                throw new InvalidOperationException("IsBasePathAlreadyInDB called without SetupDB!");
+            }
+            lock (dbContextLock)
+            {
+                
+                var itemCount = _dbContext.ScanItems?.Where(s => (s.PathBase == basePath)).Count();
+
+                if (itemCount is null)
+                {
+                    return false;
+                }
+                else if (itemCount == 0)
+                {
+                    return false;
+                }
+                else
+                {
+                    //There are already some in the database
+                    return true;
+                }
+            }
+
         }
 
 

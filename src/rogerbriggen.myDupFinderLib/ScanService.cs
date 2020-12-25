@@ -12,10 +12,10 @@ namespace RogerBriggen.MyDupFinderLib
     {
 
         private ServiceState _scanState;
-        private ServiceState ScanState
+        public ServiceState ScanState
         {
             get => _scanState;
-            set
+            private set
             {
                 if (_scanState != value)
                 {
@@ -26,7 +26,8 @@ namespace RogerBriggen.MyDupFinderLib
         }
 
         private CancellationTokenSource? cts;
-        private ScanRunner? sr;
+        //private ScanRunnerParallel? sr;
+        private ScanRunnerSingleThread? sr;
 
 
         private readonly ILogger<ScanService> _logger;
@@ -51,7 +52,9 @@ namespace RogerBriggen.MyDupFinderLib
             {
                 ScanState = ServiceState.running;
                 cts = new CancellationTokenSource();
-                sr = new ScanRunner(scanJobDTO, _serviceProvider.GetService<ILogger<ScanRunner>>());
+                //sr = new ScanRunnerParallel(scanJobDTO, _serviceProvider.GetService<ILogger<ScanRunnerParallel>>());
+                sr = new ScanRunnerSingleThread(scanJobDTO, _serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), _serviceProvider);
+                sr.ScanStateChanged += ScanStateEventHandler;
                 sr.Start(cts.Token);
             }
         }
@@ -106,13 +109,14 @@ namespace RogerBriggen.MyDupFinderLib
             handler?.Invoke(this, state);
         }
 
-        private void ScanStateEventHandler(object _, ServiceState scanState)
+        private void ScanStateEventHandler(object? _, ServiceState scanState)
         {
             _logger.LogInformation("Runner changed to state {scanState}", scanState);
-            if (scanState == ServiceState.finished)
-            {
-                ScanState = scanState;
-            }
+            //if (scanState == ServiceState.finished)
+            //{
+            //    ScanState = scanState;
+            //}
+            ScanState = scanState;
         }
     }
 }

@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\rogerbriggen.myDupFinderDB\MyDupFinderDB.csproj" />
+    <ProjectReference Include="..\..\src\rogerbriggen.myDupFinderLib\MyDupFinderLib.csproj" />
   </ItemGroup>
 
 </Project>
