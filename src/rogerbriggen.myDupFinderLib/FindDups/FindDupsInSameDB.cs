@@ -69,13 +69,10 @@ namespace RogerBriggen.MyDupFinderLib
                 {
                     if (si.FileSha512Hash != lastHash)
                     {
-                        fs.WriteLine("\"" + si.FilenameAndPath + "\"," + si.FileSize);
-                    }
-                    else
-                    {
-                        fs.WriteLine("\"" + si.FilenameAndPath + "\"," + si.FileSize);
+                        //Hash is not the same... so start another group
                         fs.WriteLine("");
                     }
+                    fs.WriteLine("\"" + si.FilenameAndPath + "\";" + si.FileSize);
                     lastHash = si.FileSha512Hash;
                 }
             }
