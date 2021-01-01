@@ -36,6 +36,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
+      with:
+        fetch-depth: 0 #avoid shallow clone so nerdbank gitversioning can do its work, see https://github.com/dotnet/Nerdbank.GitVersioning/blob/master/doc/cloudbuild.md
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
