@@ -24,10 +24,14 @@ EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MyDupFinderLib", "src\rogerbriggen.myDupFinderLib\MyDupFinderLib.csproj", "{E645F273-2E0A-4E9D-B9BB-24FE12F64325}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".github", ".github", "{58701386-6FDB-4EB7-80E2-96EB9EC96FDC}"
+	ProjectSection(SolutionItems) = preProject
+		.github\dependabot.yml = .github\dependabot.yml
+	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "workflows", "workflows", "{6C5C0B0F-DA6D-4307-9001-740930A48339}"
 	ProjectSection(SolutionItems) = preProject
 		.github\workflows\build.yml = .github\workflows\build.yml
+		.github\workflows\codeql-analysis.yml = .github\workflows\codeql-analysis.yml
 	EndProjectSection
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MyDupFinderDB", "src\rogerbriggen.myDupFinderDB\MyDupFinderDB.csproj", "{73BA49EE-CE77-4C7E-8B8F-5C9C4D0A8C4D}"
