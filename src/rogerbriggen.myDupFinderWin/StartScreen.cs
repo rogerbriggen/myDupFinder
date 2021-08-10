@@ -42,6 +42,14 @@ namespace RogerBriggen.MyDupFinderWin
             tv.EndUpdate();
         }
 
-        
+        private void btnCollapseAll_Click(object sender, EventArgs e)
+        {
+            tv.CollapseAll();
+        }
+
+        private void btnExpandAll_Click(object sender, EventArgs e)
+        {
+            tv.ExpandAll();
+        }
     }
 }

@@ -38,6 +38,8 @@ namespace RogerBriggen.MyDupFinderWin
             this.button1 = new System.Windows.Forms.Button();
             this.tv = new System.Windows.Forms.TreeView();
             this.statusStrip1 = new System.Windows.Forms.StatusStrip();
+            this.btnExpandAll = new System.Windows.Forms.Button();
+            this.btnCollapseAll = new System.Windows.Forms.Button();
             this.tabMain.SuspendLayout();
             this.tabFindDups.SuspendLayout();
             this.SuspendLayout();
@@ -65,6 +67,8 @@ namespace RogerBriggen.MyDupFinderWin
             // 
             // tabFindDups
             // 
+            this.tabFindDups.Controls.Add(this.btnCollapseAll);
+            this.tabFindDups.Controls.Add(this.btnExpandAll);
             this.tabFindDups.Controls.Add(this.button1);
             this.tabFindDups.Controls.Add(this.tv);
             this.tabFindDups.Location = new System.Drawing.Point(4, 29);
@@ -83,6 +87,7 @@ namespace RogerBriggen.MyDupFinderWin
             this.button1.TabIndex = 1;
             this.button1.Text = "button1";
             this.button1.UseVisualStyleBackColor = true;
+            this.button1.Click += button1_Click;
             // 
             // tv
             // 
@@ -103,7 +108,26 @@ namespace RogerBriggen.MyDupFinderWin
             this.statusStrip1.Size = new System.Drawing.Size(800, 22);
             this.statusStrip1.TabIndex = 3;
             this.statusStrip1.Text = "statusStrip1";
-
+            // 
+            // btnExpandAll
+            // 
+            this.btnExpandAll.Location = new System.Drawing.Point(609, 25);
+            this.btnExpandAll.Name = "btnExpandAll";
+            this.btnExpandAll.Size = new System.Drawing.Size(94, 29);
+            this.btnExpandAll.TabIndex = 2;
+            this.btnExpandAll.Text = "Expand All";
+            this.btnExpandAll.UseVisualStyleBackColor = true;
+            this.btnExpandAll.Click += new System.EventHandler(this.btnExpandAll_Click);
+            // 
+            // btnCollapseAll
+            // 
+            this.btnCollapseAll.Location = new System.Drawing.Point(609, 70);
+            this.btnCollapseAll.Name = "btnCollapseAll";
+            this.btnCollapseAll.Size = new System.Drawing.Size(94, 29);
+            this.btnCollapseAll.TabIndex = 3;
+            this.btnCollapseAll.Text = "CollapseAll";
+            this.btnCollapseAll.UseVisualStyleBackColor = true;
+            this.btnCollapseAll.Click += new System.EventHandler(this.btnCollapseAll_Click);
             // 
             // StartScreen
             // 
@@ -129,5 +153,7 @@ namespace RogerBriggen.MyDupFinderWin
         private System.Windows.Forms.Button button1;
         private System.Windows.Forms.TreeView tv;
         private System.Windows.Forms.StatusStrip statusStrip1;
+        private System.Windows.Forms.Button btnCollapseAll;
+        private System.Windows.Forms.Button btnExpandAll;
     }
 }
