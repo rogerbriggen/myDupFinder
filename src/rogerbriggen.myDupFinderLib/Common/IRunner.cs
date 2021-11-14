@@ -4,16 +4,15 @@
 using System;
 using System.Threading;
 
-namespace RogerBriggen.MyDupFinderLib
+namespace RogerBriggen.MyDupFinderLib;
+
+public interface IRunner
 {
-    public interface IRunner
-    {
-        IService.EServiceState RunnerState { get; set; }
+    IService.EServiceState RunnerState { get; set; }
 
-        event EventHandler<int>? RunnerProgressChanged;
-        event EventHandler<IService.EServiceState>? RunnerStateChanged;
+    event EventHandler<int>? RunnerProgressChanged;
+    event EventHandler<IService.EServiceState>? RunnerStateChanged;
 
-        void Dispose();
-        void Start(CancellationToken token);
-    }
+    void Dispose();
+    void Start(CancellationToken token);
 }

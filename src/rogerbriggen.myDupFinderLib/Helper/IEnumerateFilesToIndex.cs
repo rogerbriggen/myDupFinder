@@ -4,18 +4,17 @@
 using System.Collections.Concurrent;
 using RogerBriggen.MyDupFinderData;
 
-namespace RogerBriggen.MyDupFinderLib
+namespace RogerBriggen.MyDupFinderLib;
+
+public interface IEnumerateFilesToIndex
 {
-    public interface IEnumerateFilesToIndex
-    {
-        public int CurrentCount { get; }
+    public int CurrentCount { get; }
 
-        public int ErrorCount { get; }
+    public int ErrorCount { get; }
 
-        public bool HasMore { get; }
+    public bool HasMore { get; }
 
-        public ConcurrentQueue<ScanItemDto> ScanItemCollection { get; }
+    public ConcurrentQueue<ScanItemDto> ScanItemCollection { get; }
 
-        public abstract void EnumerateFiles(int maxFiles = 100);
-    }
+    public abstract void EnumerateFiles(int maxFiles = 100);
 }

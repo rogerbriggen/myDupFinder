@@ -1,20 +1,22 @@
-﻿using System;
+﻿// Roger Briggen license this file to you under the MIT license.
+//
+
+using System;
 using System.Windows.Forms;
 
-namespace RogerBriggen.MyDupFinderWin
+namespace RogerBriggen.MyDupFinderWin;
+
+static class Program
 {
-    static class Program
+    /// <summary>
+    ///  The main entry point for the application.
+    /// </summary>
+    [STAThread]
+    static void Main()
     {
-        /// <summary>
-        ///  The main entry point for the application.
-        /// </summary>
-        [STAThread]
-        static void Main()
-        {
-            Application.SetHighDpiMode(HighDpiMode.SystemAware);
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new StartScreen());
-        }
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Application.Run(new StartScreen());
     }
 }

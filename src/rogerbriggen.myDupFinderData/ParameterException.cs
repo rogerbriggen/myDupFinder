@@ -3,20 +3,19 @@
 
 using System;
 
-namespace RogerBriggen.MyDupFinderData
-{
-    public class ParameterException : SystemException
-    {
-        
-     
-        public ParameterException(String message) : base(message)
-        {
-            
-        }
+namespace RogerBriggen.MyDupFinderData;
 
-        public ParameterException(String message, Exception innerException) : base(message, innerException)
-        {
-            
-        }
+public class ParameterException : SystemException
+{
+
+
+    public ParameterException(String message) : base(message)
+    {
+
+    }
+
+    public ParameterException(String message, Exception innerException) : base(message, innerException)
+    {
+
     }
 }

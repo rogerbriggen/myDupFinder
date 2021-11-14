@@ -289,6 +289,7 @@ file_header_template = Roger Briggen license this file to you under the MIT lice
 # Wrapping preferences
 csharp_preserve_single_line_statements = true
 csharp_preserve_single_line_blocks = true
+csharp_style_namespace_declarations=file_scoped:error
 
 
 # C++ Files

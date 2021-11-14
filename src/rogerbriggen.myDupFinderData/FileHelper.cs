@@ -3,31 +3,30 @@
 
 using System.IO;
 
-namespace RogerBriggen.MyDupFinderData
-{
-    public class FileHelper
-    {
-        public static bool EndsWithDirectoryDelimiter(string pathToCheck)
-        {
-            if (pathToCheck.EndsWith(Path.DirectorySeparatorChar))
-            {
-                return true;
-            }
-            if (pathToCheck.EndsWith(Path.AltDirectorySeparatorChar))
-            {
-                return true;
-            }
-            return false;
-        }
+namespace RogerBriggen.MyDupFinderData;
 
-        public static string AddDirectoryDelimiter(string path)
+public class FileHelper
+{
+    public static bool EndsWithDirectoryDelimiter(string pathToCheck)
+    {
+        if (pathToCheck.EndsWith(Path.DirectorySeparatorChar))
         {
-            if (EndsWithDirectoryDelimiter(path))
-            {
-                //Nothing to do...
-                return path;
-            }
-            return path + Path.DirectorySeparatorChar;
+            return true;
         }
+        if (pathToCheck.EndsWith(Path.AltDirectorySeparatorChar))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    public static string AddDirectoryDelimiter(string path)
+    {
+        if (EndsWithDirectoryDelimiter(path))
+        {
+            //Nothing to do...
+            return path;
+        }
+        return path + Path.DirectorySeparatorChar;
     }
 }

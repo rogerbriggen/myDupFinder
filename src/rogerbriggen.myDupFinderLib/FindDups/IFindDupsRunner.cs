@@ -1,10 +1,9 @@
 ﻿// Roger Briggen license this file to you under the MIT license.
 //
 
-namespace RogerBriggen.MyDupFinderLib
+namespace RogerBriggen.MyDupFinderLib;
+
+internal interface IFindDupsRunner : IRunner
 {
-    internal interface IFindDupsRunner : IRunner
-    {
-        
-    }
+
 }

@@ -10,234 +10,230 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RogerBriggen.MyDupFinderData;
 
-namespace RogerBriggen.MyDupFinderDB
+namespace RogerBriggen.MyDupFinderDB;
+
+public class ScanJobDBInserts : IDisposable
 {
-    public class ScanJobDBInserts : IDisposable
+
+    private DubFinderContext? _dbContext;
+    private DbContextOptions<DubFinderContext>? _dbContextOptions;
+    private Queue<ScanItemDto> _finishedScanItemCollection = new Queue<ScanItemDto>();
+    private Queue<ScanErrorItemDto> _errorScanItemCollection = new Queue<ScanErrorItemDto>();
+    private const int _commitCount = 100; //Save changes every 100 item
+    private const bool _recreateContext = true; //Its faster to create a dbIndex after a wile
+    private readonly object dbContextLock = new object();
+    private readonly ILogger<ScanJobDBInserts> _logger;
+    private bool _disposedValue;
+    public int TotalSuccessCount { get; private set; }
+    public int TotalErrorCount { get; private set; }
+
+
+    public ScanJobDBInserts(ILogger<ScanJobDBInserts>? logger) => _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanJobDBInserts>();
+    public void SetupDB(string databaseFile)
     {
-
-        private DubFinderContext? _dbContext;
-        private DbContextOptions<DubFinderContext>? _dbContextOptions;
-        private Queue<ScanItemDto> _finishedScanItemCollection = new Queue<ScanItemDto>();
-        private Queue<ScanErrorItemDto> _errorScanItemCollection = new Queue<ScanErrorItemDto>();
-        private const int _commitCount = 100; //Save changes every 100 item
-        private const bool _recreateContext = true; //Its faster to create a dbIndex after a wile
-        private readonly object dbContextLock = new object();
-        private readonly ILogger<ScanJobDBInserts> _logger;
-        private bool _disposedValue;
-        public int TotalSuccessCount { get; private set; }
-        public int TotalErrorCount { get; private set; }
-
-
-        public ScanJobDBInserts(ILogger<ScanJobDBInserts>? logger)
+        lock (dbContextLock)
         {
-            _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanJobDBInserts>();
+            Directory.CreateDirectory(Path.GetDirectoryName(databaseFile) ?? "");
+            _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile);
+            _dbContext = new DubFinderContext(_dbContextOptions);
+            _dbContext.Database.Migrate();
+            _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
+            TotalSuccessCount = 0;
+            TotalErrorCount = 0;
         }
-        public void SetupDB(string databaseFile)
+
+    }
+
+    public void Enqueue(ScanItemDto si)
+    {
+        if ((_dbContext is null) || (_dbContextOptions is null))
         {
-            lock(dbContextLock)
+            throw new InvalidOperationException("Enqueue called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            _finishedScanItemCollection.Enqueue(si);
+            WriteChangesInternal();
+        }
+    }
+
+    public void Enqueue(ScanErrorItemDto sei)
+    {
+        if ((_dbContext is null) || (_dbContextOptions is null))
+        {
+            throw new InvalidOperationException("Enqueue called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            _errorScanItemCollection.Enqueue(sei);
+            WriteChangesInternal();
+        }
+    }
+
+    private void WriteChangesInternal()
+    {
+        if ((_dbContext is null) || (_dbContextOptions is null))
+        {
+            throw new InvalidOperationException("Enqueue or WriteChanges called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            foreach (ScanItemDto siInList in _finishedScanItemCollection)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(databaseFile) ?? "");
-                _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile);
+                _dbContext.Add(siInList);
+            }
+            foreach (ScanErrorItemDto seiInList in _errorScanItemCollection)
+            {
+                _dbContext.Add(seiInList);
+            }
+            int written = _dbContext.SaveChanges();
+            if (written == _finishedScanItemCollection.Count + _errorScanItemCollection.Count)
+            {
+                TotalSuccessCount += _finishedScanItemCollection.Count;
+                TotalErrorCount += _errorScanItemCollection.Count;
+                //all ok... we delete all items
+                _finishedScanItemCollection = new Queue<ScanItemDto>();
+                _errorScanItemCollection = new Queue<ScanErrorItemDto>();
+            }
+            if (_recreateContext && (written % _commitCount == 0))
+            {
+                _dbContext.Dispose();
                 _dbContext = new DubFinderContext(_dbContextOptions);
-                _dbContext.Database.Migrate();
                 _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
-                TotalSuccessCount = 0;
-                TotalErrorCount = 0;
-            }
-            
-        }
-
-        public void Enqueue(ScanItemDto si)
-        {
-            if ((_dbContext is null) || (_dbContextOptions is null))
-            {
-                throw new InvalidOperationException("Enqueue called without SetupDB!");
-            }
-            lock (dbContextLock)
-            {
-                _finishedScanItemCollection.Enqueue(si);
-                WriteChangesInternal();
             }
         }
+    }
 
-        public void Enqueue(ScanErrorItemDto sei)
+    public bool IsEmptyScanItemTable()
+    {
+        if (_dbContext is null)
         {
-            if ((_dbContext is null) || (_dbContextOptions is null))
+            throw new InvalidOperationException("IsEmptyScanItemTable called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            var itemCount = _dbContext.ScanItems?.Count();
+            if (itemCount is null)
             {
-                throw new InvalidOperationException("Enqueue called without SetupDB!");
+                return true;
             }
-            lock (dbContextLock)
+            else if (itemCount == 0)
             {
-                _errorScanItemCollection.Enqueue(sei);
-                WriteChangesInternal();
+                return true;
+            }
+            else
+            {
+                return false;
             }
         }
+    }
 
-        private void WriteChangesInternal()
+    public bool IsAlreadyInDB(ScanItemDto si)
+    {
+        if (_dbContext is null)
         {
-            if ((_dbContext is null) || (_dbContextOptions is null))
+            throw new InvalidOperationException("IsAlreadyInDB called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            var itemCount = _dbContext.ScanItems?.Where(s => ((s.FilenameAndPath == si.FilenameAndPath) && (s.FileSize == si.FileSize) && (s.ScanExecutionComputer == si.ScanExecutionComputer))).Count();
+            if (itemCount is null)
             {
-                throw new InvalidOperationException("Enqueue or WriteChanges called without SetupDB!");
+                return false;
             }
-            lock (dbContextLock)
+            else if (itemCount == 0)
             {
-                foreach (ScanItemDto siInList in _finishedScanItemCollection)
-                {
-                    _dbContext.Add(siInList);
-                }
-                foreach (ScanErrorItemDto seiInList in _errorScanItemCollection)
-                {
-                    _dbContext.Add(seiInList);
-                }
-                int written = _dbContext.SaveChanges();
-                if (written == _finishedScanItemCollection.Count + _errorScanItemCollection.Count)
-                {
-                    TotalSuccessCount += _finishedScanItemCollection.Count;
-                    TotalErrorCount += _errorScanItemCollection.Count;
-                    //all ok... we delete all items
-                    _finishedScanItemCollection = new Queue<ScanItemDto>();
-                    _errorScanItemCollection = new Queue<ScanErrorItemDto>();
-                }
-                if (_recreateContext && (written % _commitCount == 0))
-                {
-                    _dbContext.Dispose();
-                    _dbContext = new DubFinderContext(_dbContextOptions);
-                    _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
-                }
+                return false;
+            }
+            else if (itemCount == 1)
+            {
+                return true;
+            }
+            else
+            {
+                //Strange
+                _logger.LogWarning($"IsAlreadyInDB had a strange itemCount of {itemCount}...");
+                return true;
             }
         }
 
-        public bool IsEmptyScanItemTable()
+    }
+
+    public bool IsBasePathAlreadyInDB(string basePath)
+    {
+        if (_dbContext is null)
         {
-            if (_dbContext is null)
+            throw new InvalidOperationException("IsBasePathAlreadyInDB called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+
+            var itemCount = _dbContext.ScanItems?.Where(s => (s.PathBase == basePath)).Count();
+
+            if (itemCount is null)
             {
-                throw new InvalidOperationException("IsEmptyScanItemTable called without SetupDB!");
+                return false;
             }
-            lock (dbContextLock)
+            else if (itemCount == 0)
             {
-                var itemCount = _dbContext.ScanItems?.Count();
-                if (itemCount is null)
-                {
-                    return true;
-                }
-                else if (itemCount == 0)
-                {
-                    return true;
-                }
-                else
-                {
-                    return false;
-                }
+                return false;
+            }
+            else
+            {
+                //There are already some in the database
+                return true;
             }
         }
 
-        public bool IsAlreadyInDB(ScanItemDto si)
+    }
+
+
+    public void WriteChanges()
+    {
+        if (_dbContext is null)
         {
-            if (_dbContext is null)
-            {
-                throw new InvalidOperationException("IsAlreadyInDB called without SetupDB!");
-            }
-            lock (dbContextLock)
-            {
-                var itemCount = _dbContext.ScanItems?.Where(s => ((s.FilenameAndPath == si.FilenameAndPath) && (s.FileSize == si.FileSize) && (s.ScanExecutionComputer == si.ScanExecutionComputer))).Count();
-                if (itemCount is null)
-                {
-                    return false;
-                }
-                else if (itemCount == 0)
-                {
-                    return false;
-                }
-                else if (itemCount == 1)
-                {
-                    return true;
-                }
-                else
-                {
-                    //Strange
-                    _logger.LogWarning($"IsAlreadyInDB had a strange itemCount of {itemCount}...");
-                    return true;
-                }
-            }
-            
+            throw new InvalidOperationException("WriteChanges called without SetupDB!");
         }
-
-        public bool IsBasePathAlreadyInDB(string basePath)
+        lock (dbContextLock)
         {
-            if (_dbContext is null)
-            {
-                throw new InvalidOperationException("IsBasePathAlreadyInDB called without SetupDB!");
-            }
-            lock (dbContextLock)
-            {
-                
-                var itemCount = _dbContext.ScanItems?.Where(s => (s.PathBase == basePath)).Count();
-
-                if (itemCount is null)
-                {
-                    return false;
-                }
-                else if (itemCount == 0)
-                {
-                    return false;
-                }
-                else
-                {
-                    //There are already some in the database
-                    return true;
-                }
-            }
-
+            WriteChangesInternal();
         }
+    }
 
-
-        public void WriteChanges()
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposedValue)
         {
-            if (_dbContext is null)
+            if (disposing)
             {
-                throw new InvalidOperationException("WriteChanges called without SetupDB!");
-            }
-            lock (dbContextLock)
-            {
-                WriteChangesInternal();
-            }
-        }
-
-        protected virtual void Dispose(bool disposing)
-        {
-            if (!_disposedValue)
-            {
-                if (disposing)
+                // TODO: Verwalteten Zustand (verwaltete Objekte) bereinigen
+                if (_dbContext is not null)
                 {
-                    // TODO: Verwalteten Zustand (verwaltete Objekte) bereinigen
-                    if (_dbContext is not null)
+                    lock (dbContextLock)
                     {
-                        lock (dbContextLock)
-                        {
-                            _dbContext.SaveChanges();
-                            _dbContext.Dispose();
-                        }
+                        _dbContext.SaveChanges();
+                        _dbContext.Dispose();
                     }
                 }
-
-                // TODO: Nicht verwaltete Ressourcen (nicht verwaltete Objekte) freigeben und Finalizer überschreiben
-                // TODO: Große Felder auf NULL setzen
-                _disposedValue = true;
             }
-        }
 
-        // // TODO: Finalizer nur überschreiben, wenn "Dispose(bool disposing)" Code für die Freigabe nicht verwalteter Ressourcen enthält
-        // ~ScanRunner()
-        // {
-        //     // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-        //     Dispose(disposing: false);
-        // }
-
-        public void Dispose()
-        {
-            // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
-            Dispose(disposing: true);
-            GC.SuppressFinalize(this);
+            // TODO: Nicht verwaltete Ressourcen (nicht verwaltete Objekte) freigeben und Finalizer überschreiben
+            // TODO: Große Felder auf NULL setzen
+            _disposedValue = true;
         }
+    }
+
+    // // TODO: Finalizer nur überschreiben, wenn "Dispose(bool disposing)" Code für die Freigabe nicht verwalteter Ressourcen enthält
+    // ~ScanRunner()
+    // {
+    //     // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+    //     Dispose(disposing: false);
+    // }
+
+    public void Dispose()
+    {
+        // Ändern Sie diesen Code nicht. Fügen Sie Bereinigungscode in der Methode "Dispose(bool disposing)" ein.
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
     }
 }
