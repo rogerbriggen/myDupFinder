@@ -23,6 +23,10 @@ namespace RogerBriggen.MyDupFinder
             ConfigureServices(serviceCollection);
             var serviceProvider = serviceCollection.BuildServiceProvider();
             var logger = serviceProvider.GetService<Microsoft.Extensions.Logging.ILogger<Program>>();
+            if (logger == null)
+            {
+                throw new Exception("Could not get a logger");
+            }
             var assembly = typeof(Program).Assembly;
             logger.LogInformation($"Application with version {assembly.GetName().Version}  ({ThisAssembly.AssemblyInformationalVersion}) started...");
 
@@ -142,7 +146,7 @@ namespace RogerBriggen.MyDupFinder
             // serviceProvider.Dispose();
         }
 
-        private static void WaitForThreadOrKeyPress(ILogger<Program>? logger, string jobName, IService service, Thread t)
+        private static void WaitForThreadOrKeyPress(ILogger<Program> logger, string jobName, IService service, Thread t)
         {
             while (true)
             {
