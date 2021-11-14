@@ -34,7 +34,7 @@ jobs:
         # https://docs.github.com/en/free-pro-team@latest/github/finding-security-vulnerabilities-and-errors-in-your-code/configuring-code-scanning#changing-the-languages-that-are-analyzed
 
     env:
-      DOTNET_VERSION: 6.0.100
+      DOTNET_VERSION: 6.0.x
       RELEASE_SUBDIR: net6.0
         
     steps:
