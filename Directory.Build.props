@@ -7,7 +7,8 @@
     </PackageReference>
   </ItemGroup>
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <DotNetVersion>net8.0</DotNetVersion>
+    <TargetFramework>$(DotNetVersion)</TargetFramework>
     <!-- Optional: Publish the repository URL in the built .nupkg (in the NuSpec <Repository> element) -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
 
