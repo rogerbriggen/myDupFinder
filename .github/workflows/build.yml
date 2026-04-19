@@ -39,7 +39,19 @@ jobs:
       run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat="cobertura" /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
 
     - name: Generate coverage report
-      run: dotnet tool run reportgenerator -- "-reports:${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\coverage.cobertura.xml" "-targetdir:${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\CoverageReport" "-reporttypes:Html"
+      run: dotnet tool run reportgenerator -- "-reports:${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\coverage.cobertura.xml" "-targetdir:${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\CoverageReport" "-reporttypes:Html;MarkdownSummaryGithub"
+
+    - name: Publish coverage in build summary
+      run: cat "tests/rogerbriggen.myDupFinderLibUnitTest/TestResults/CoverageReport/SummaryGithub.md" >> $GITHUB_STEP_SUMMARY
+      shell: bash
+
+    - name: Add comment to PR
+      if: github.event_name == 'pull_request'
+      run: gh pr comment $PR_NUMBER --edit-last --create-if-none --body-file "tests/rogerbriggen.myDupFinderLibUnitTest/TestResults/CoverageReport/SummaryGithub.md"
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR_NUMBER: ${{ github.event.number }}
 
     - name: Upload coverage report
       uses: actions/upload-artifact@v7
