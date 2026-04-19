@@ -25,9 +25,18 @@ public class FindDupsService : BasicService<FindDupsService>, IFindDupsService
 
         if (ServiceState == IService.EServiceState.idle)
         {
-
-            var fdr = new FindDupsInSameDB(findDupsJobDTO, _serviceProvider.GetService<ILogger<FindDupsInSameDB>>(), _serviceProvider);
-            base.Start(fdr);
+            if (string.IsNullOrWhiteSpace(findDupsJobDTO.DatabaseFile))
+            {
+                // Find duplicates within the same database
+                var fdr = new FindDupsInSameDB(findDupsJobDTO, _serviceProvider.GetService<ILogger<FindDupsInSameDB>>(), _serviceProvider);
+                base.Start(fdr);
+            }
+            else
+            {
+                // Find duplicates across two different databases
+                var fdr = new FindDupsInDifferentDBs(findDupsJobDTO, _serviceProvider.GetService<ILogger<FindDupsInDifferentDBs>>(), _serviceProvider);
+                base.Start(fdr);
+            }
         }
     }
 

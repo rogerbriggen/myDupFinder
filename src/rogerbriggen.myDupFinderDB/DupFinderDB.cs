@@ -60,6 +60,48 @@ public class DubFinderDB : IDisposable
         }
     }
 
+    /// <summary>
+    /// Finds duplicate files across two different databases by comparing SHA-512 hashes.
+    /// Returns items from the base (current) database that have matching hashes in the second database.
+    /// </summary>
+    /// <param name="secondDatabaseFile">Path to the second database file to compare against.</param>
+    /// <returns>A list of items from the base database whose hash exists in the second database, or null if no matches found.</returns>
+    public List<ScanItemDto>? FindDupsInDifferentDBs(string secondDatabaseFile)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("FindDupsInDifferentDBs called without SetupDB!");
+        }
+        if (string.IsNullOrWhiteSpace(secondDatabaseFile))
+        {
+            throw new ArgumentException("secondDatabaseFile may not be null or empty", nameof(secondDatabaseFile));
+        }
+
+        lock (dbContextLock)
+        {
+            // Load hashes from the second database
+            using var secondDbContext = DubFinderContextFactory.CreateDubFinderContext(secondDatabaseFile);
+            var secondDbHashes = secondDbContext.ScanItems?
+                .Where(s => s.FileSha512Hash != null && s.FileSha512Hash != string.Empty)
+                .Select(s => s.FileSha512Hash)
+                .Distinct()
+                .ToList();
+
+            if (secondDbHashes is null || secondDbHashes.Count == 0)
+            {
+                return null;
+            }
+
+            // Find items in the base database that match hashes from the second database
+            var duplicates = _dbContext.ScanItems?
+                .Where(s => secondDbHashes.Contains(s.FileSha512Hash))
+                .OrderBy(s => s.FileSha512Hash)
+                .ToList();
+
+            return duplicates;
+        }
+    }
+
 
     protected virtual void Dispose(bool disposing)
     {
