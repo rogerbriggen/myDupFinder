@@ -67,6 +67,18 @@ The application is configured through an XML project file. You can generate an e
     </MyDupFinderFindDupsJobDTO>
   </MyDupFinderFindDupsJobDTOs>
 
+  <!-- Refresh jobs: refresh an existing database by adding new files, updating changed files, and removing deleted files -->
+  <MyDupFinderRefreshJobDTOs>
+    <MyDupFinderRefreshJobDTO>
+      <JobName>Example RefreshJob name</JobName>
+      <BasePath>m:\Test</BasePath>
+      <OriginComputer>E6600</OriginComputer>
+      <ScanName>Backup of old computer</ScanName>
+      <DatabaseFile>m:\finddupdb\base.db</DatabaseFile>
+      <ReportPath>m:\finddupdb\</ReportPath>
+    </MyDupFinderRefreshJobDTO>
+  </MyDupFinderRefreshJobDTOs>
+
 </MyDupFinderProjectDTO>
 ```
 
@@ -82,6 +94,16 @@ The `MyDupFinderFindDupsJobDTO` supports two modes of operation:
 - `FindOnlyDups` — reports only duplicate files
 - `FindDupsTheWholeLot` — reports everything: duplicates, missing files, new files, changed files
 
+### Refresh Jobs
+
+Refresh jobs update an existing database to reflect the current state of the files on disk. This is useful when files have been added, modified, or deleted since the last scan.
+
+The refresh is smart and fast:
+- **New files** on disk are added to the database with their SHA-512 hash.
+- **Modified files** (where the file size or last modification date has changed) are updated with a recalculated hash.
+- **Unchanged files** (same size and date) skip hash recalculation — only the last scan date is updated.
+- **Deleted files** (in the database but no longer on disk) are removed from the database.
+
 ## Roadmap:
 - :heavy_check_mark: Scan Files and generate hash information
 - :heavy_check_mark: Parallelize scan to all cores (this works better than expected... the computer is unusable...)
@@ -96,5 +118,5 @@ The `MyDupFinderFindDupsJobDTO` supports two modes of operation:
 - :heavy_check_mark: Find dups in different databases
 - Visually show the dups and manually change the state
 - Delete / Move the dups
-- Refresh a database
+- :heavy_check_mark: Refresh a database
 - Check a database with the original files (bit rot, changes of files)
