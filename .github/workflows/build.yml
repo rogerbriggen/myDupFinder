@@ -30,7 +30,7 @@ jobs:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
     - name: Install dependencies
-      run: dotnet restore
+      run: dotnet restore && dotnet tool restore
 
     - name: Build
       run: dotnet build --configuration Release --no-restore
@@ -38,11 +38,8 @@ jobs:
     - name: Test
       run: dotnet test --no-restore --configuration Release --verbosity normal /p:CollectCoverage=true /p:CoverletOutputFormat="cobertura" /p:CoverletOutput="TestResults/" /p:UseSourceLink=true
 
-    - name: Install ReportGenerator
-      run: dotnet tool install --global dotnet-reportgenerator-globaltool
-
     - name: Generate coverage report
-      run: reportgenerator -reports:"${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\coverage.cobertura.xml" -targetdir:"${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\CoverageReport" -reporttypes:Html
+      run: dotnet tool run reportgenerator -- -reports:"${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\coverage.cobertura.xml" -targetdir:"${{ github.workspace }}\tests\rogerbriggen.myDupFinderLibUnitTest\TestResults\CoverageReport" -reporttypes:Html
 
     - name: Upload coverage report
       uses: actions/upload-artifact@v7
