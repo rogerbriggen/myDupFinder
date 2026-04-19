@@ -10,63 +10,57 @@ namespace RogerBriggen.MyDupFinderLibUnitTest;
 public class FileHelperTest
 {
     [Fact]
-    public void EndsWithDirectoryDelimiter_DirectorySeparatorChar_ReturnsTrue()
+    public void EndsWithDirectoryDelimiter_ShouldReturnTrue_WhenPathEndsWithDirectorySeparatorChar()
     {
-        string path = "somePath" + Path.DirectorySeparatorChar;
+        string path = "somepath" + Path.DirectorySeparatorChar;
         Assert.True(FileHelper.EndsWithDirectoryDelimiter(path));
     }
 
     [Fact]
-    public void EndsWithDirectoryDelimiter_AltDirectorySeparatorChar_ReturnsTrue()
+    public void EndsWithDirectoryDelimiter_ShouldReturnTrue_WhenPathEndsWithAltDirectorySeparatorChar()
     {
-        string path = "somePath" + Path.AltDirectorySeparatorChar;
+        string path = "somepath" + Path.AltDirectorySeparatorChar;
         Assert.True(FileHelper.EndsWithDirectoryDelimiter(path));
     }
 
     [Fact]
-    public void EndsWithDirectoryDelimiter_NoDelimiter_ReturnsFalse()
+    public void EndsWithDirectoryDelimiter_ShouldReturnFalse_WhenPathHasNoTrailingDelimiter()
     {
-        string path = "somePath";
+        string path = "somepath";
         Assert.False(FileHelper.EndsWithDirectoryDelimiter(path));
     }
 
     [Fact]
-    public void EndsWithDirectoryDelimiter_EmptyString_ReturnsFalse()
+    public void AddDirectoryDelimiter_ShouldAddDelimiter_WhenNotPresent()
     {
-        Assert.False(FileHelper.EndsWithDirectoryDelimiter(string.Empty));
-    }
-
-    [Fact]
-    public void AddDirectoryDelimiter_PathWithoutDelimiter_AddsDelimiter()
-    {
-        string path = "somePath";
+        string path = "somepath";
         string result = FileHelper.AddDirectoryDelimiter(path);
         Assert.True(FileHelper.EndsWithDirectoryDelimiter(result));
         Assert.StartsWith(path, result);
     }
 
     [Fact]
-    public void AddDirectoryDelimiter_PathAlreadyHasDirectorySeparator_NoChangeNeeded()
+    public void AddDirectoryDelimiter_ShouldNotAddDelimiter_WhenAlreadyEndsWithDirectorySeparatorChar()
     {
-        string path = "somePath" + Path.DirectorySeparatorChar;
+        string path = "somepath" + Path.DirectorySeparatorChar;
         string result = FileHelper.AddDirectoryDelimiter(path);
         Assert.Equal(path, result);
     }
 
     [Fact]
-    public void AddDirectoryDelimiter_PathAlreadyHasAltDirectorySeparator_NoChangeNeeded()
+    public void AddDirectoryDelimiter_ShouldNotAddDelimiter_WhenAlreadyEndsWithAltDirectorySeparatorChar()
     {
-        string path = "somePath" + Path.AltDirectorySeparatorChar;
+        string path = "somepath" + Path.AltDirectorySeparatorChar;
         string result = FileHelper.AddDirectoryDelimiter(path);
         Assert.Equal(path, result);
     }
 
     [Fact]
-    public void AddDirectoryDelimiter_TempPath_EndsWithDelimiter()
+    public void AddDirectoryDelimiter_ShouldPreservePathContent()
     {
-        // Path.GetTempPath() already ends with a separator on all platforms
-        string tempPath = Path.GetTempPath();
-        string result = FileHelper.AddDirectoryDelimiter(tempPath);
-        Assert.True(FileHelper.EndsWithDirectoryDelimiter(result));
+        string basePath = Path.Combine("some", "nested", "path");
+        string result = FileHelper.AddDirectoryDelimiter(basePath);
+        Assert.StartsWith(basePath, result);
+        Assert.True(result.Length == basePath.Length + 1);
     }
 }

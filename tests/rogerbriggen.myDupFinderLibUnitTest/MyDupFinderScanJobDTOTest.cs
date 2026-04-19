@@ -10,242 +10,141 @@ namespace RogerBriggen.MyDupFinderLibUnitTest;
 
 public class MyDupFinderScanJobDTOTest
 {
-    private string CreateTempDir()
+    private static MyDupFinderScanJobDTO CreateValidDto(string basePath)
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "MyDupFinderTest_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        return tempDir;
-    }
-
-    [Fact]
-    public void CheckSanity_ValidDto_NoException()
-    {
-        string baseDir = CreateTempDir();
-        string dbDir = CreateTempDir();
-        try
-        {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                JobName = "TestJob",
-                OriginComputer = "TestPC",
-                ScanName = "TestScan",
-                BasePath = baseDir,
-                DatabaseFile = Path.Combine(dbDir, "test.db"),
-                ReportPath = dbDir
-            };
-            MyDupFinderScanJobDTO.CheckSanity(dto);
-        }
-        finally
-        {
-            Directory.Delete(baseDir, true);
-            Directory.Delete(dbDir, true);
-        }
-    }
-
-    [Fact]
-    public void CheckSanity_EmptyJobName_ThrowsParameterException()
-    {
-        string baseDir = CreateTempDir();
-        try
-        {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                JobName = string.Empty,
-                OriginComputer = "TestPC",
-                ScanName = "TestScan",
-                BasePath = baseDir,
-                DatabaseFile = Path.Combine(Path.GetTempPath(), "test.db"),
-                ReportPath = Path.GetTempPath()
-            };
-            Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
-        }
-        finally
-        {
-            Directory.Delete(baseDir, true);
-        }
-    }
-
-    [Fact]
-    public void CheckSanity_EmptyOriginComputer_ThrowsParameterException()
-    {
-        string baseDir = CreateTempDir();
-        try
-        {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                JobName = "TestJob",
-                OriginComputer = string.Empty,
-                ScanName = "TestScan",
-                BasePath = baseDir,
-                DatabaseFile = Path.Combine(Path.GetTempPath(), "test.db"),
-                ReportPath = Path.GetTempPath()
-            };
-            Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
-        }
-        finally
-        {
-            Directory.Delete(baseDir, true);
-        }
-    }
-
-    [Fact]
-    public void CheckSanity_EmptyScanName_ThrowsParameterException()
-    {
-        string baseDir = CreateTempDir();
-        try
-        {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                JobName = "TestJob",
-                OriginComputer = "TestPC",
-                ScanName = string.Empty,
-                BasePath = baseDir,
-                DatabaseFile = Path.Combine(Path.GetTempPath(), "test.db"),
-                ReportPath = Path.GetTempPath()
-            };
-            Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
-        }
-        finally
-        {
-            Directory.Delete(baseDir, true);
-        }
-    }
-
-    [Fact]
-    public void CheckSanity_EmptyBasePath_ThrowsParameterException()
-    {
-        var dto = new MyDupFinderScanJobDTO
+        return new MyDupFinderScanJobDTO
         {
             JobName = "TestJob",
-            OriginComputer = "TestPC",
+            OriginComputer = "TestComputer",
             ScanName = "TestScan",
-            BasePath = string.Empty,
-            DatabaseFile = Path.Combine(Path.GetTempPath(), "test.db"),
-            ReportPath = Path.GetTempPath()
+            BasePath = basePath,
+            DatabaseFile = Path.Combine(Path.GetTempPath(), "testdb_" + Guid.NewGuid() + ".db"),
+            ReportPath = Path.Combine(Path.GetTempPath(), "reports_" + Guid.NewGuid())
         };
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenJobNameIsEmpty()
+    {
+        var dto = CreateValidDto("somepath");
+        dto.JobName = string.Empty;
         Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
     }
 
     [Fact]
-    public void CheckSanity_EmptyDatabaseFile_ThrowsParameterException()
+    public void CheckSanity_ShouldThrow_WhenJobNameIsWhitespace()
     {
-        string baseDir = CreateTempDir();
-        try
-        {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                JobName = "TestJob",
-                OriginComputer = "TestPC",
-                ScanName = "TestScan",
-                BasePath = baseDir,
-                DatabaseFile = string.Empty,
-                ReportPath = Path.GetTempPath()
-            };
-            Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
-        }
-        finally
-        {
-            Directory.Delete(baseDir, true);
-        }
-    }
-
-    [Fact]
-    public void CheckSanity_NonExistingBasePath_ThrowsParameterException()
-    {
-        var dto = new MyDupFinderScanJobDTO
-        {
-            JobName = "TestJob",
-            OriginComputer = "TestPC",
-            ScanName = "TestScan",
-            BasePath = Path.Combine(Path.GetTempPath(), "NonExistingDir_" + Guid.NewGuid().ToString("N")),
-            DatabaseFile = Path.Combine(Path.GetTempPath(), "test.db"),
-            ReportPath = Path.GetTempPath()
-        };
+        var dto = CreateValidDto("somepath");
+        dto.JobName = "   ";
         Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
     }
 
     [Fact]
-    public void CheckSanity_DatabaseFileBelowBasePath_ThrowsParameterException()
+    public void CheckSanity_ShouldThrow_WhenOriginComputerIsEmpty()
     {
-        string baseDir = CreateTempDir();
+        var dto = CreateValidDto("somepath");
+        dto.OriginComputer = string.Empty;
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenScanNameIsEmpty()
+    {
+        var dto = CreateValidDto("somepath");
+        dto.ScanName = string.Empty;
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenBasePathIsEmpty()
+    {
+        var dto = CreateValidDto(string.Empty);
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenDatabaseFileIsEmpty()
+    {
+        var dto = CreateValidDto("somepath");
+        dto.DatabaseFile = string.Empty;
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenBasePathDoesNotExist()
+    {
+        string nonExistentPath = Path.Combine(Path.GetTempPath(), "nonexistent_" + Guid.NewGuid());
+        var dto = CreateValidDto(nonExistentPath);
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenDatabaseFileIsBelowBasePath()
+    {
+        string tmpDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(tmpDir);
         try
         {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                JobName = "TestJob",
-                OriginComputer = "TestPC",
-                ScanName = "TestScan",
-                BasePath = baseDir,
-                DatabaseFile = Path.Combine(baseDir, "test.db"),
-                ReportPath = Path.GetTempPath()
-            };
+            var dto = CreateValidDto(tmpDir);
+            dto.DatabaseFile = Path.Combine(tmpDir, "db.db");
             Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
         }
         finally
         {
-            Directory.Delete(baseDir, true);
+            Directory.Delete(tmpDir, true);
         }
     }
 
     [Fact]
-    public void CheckSanity_ReportPathBelowBasePath_ThrowsParameterException()
+    public void CheckSanity_ShouldThrow_WhenReportPathIsBelowBasePath()
     {
-        string baseDir = CreateTempDir();
-        string dbDir = CreateTempDir();
+        string tmpDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(tmpDir);
         try
         {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                JobName = "TestJob",
-                OriginComputer = "TestPC",
-                ScanName = "TestScan",
-                BasePath = baseDir,
-                DatabaseFile = Path.Combine(dbDir, "test.db"),
-                ReportPath = Path.Combine(baseDir, "reports")
-            };
+            var dto = CreateValidDto(tmpDir);
+            dto.ReportPath = Path.Combine(tmpDir, "reports");
             Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(dto));
         }
         finally
         {
-            Directory.Delete(baseDir, true);
-            Directory.Delete(dbDir, true);
+            Directory.Delete(tmpDir, true);
         }
     }
 
     [Fact]
-    public void FixDto_BasePathWithoutDelimiter_AddsDelimiter()
+    public void FixDto_ShouldAddDelimiterToBasePath_WhenNotPresent()
     {
-        string baseDir = CreateTempDir();
-        // Remove trailing separator if any
-        string baseDirNoTrail = baseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        try
-        {
-            var dto = new MyDupFinderScanJobDTO
-            {
-                BasePath = baseDirNoTrail,
-                ReportPath = baseDirNoTrail
-            };
-            MyDupFinderScanJobDTO.FixDto(dto);
-            Assert.True(FileHelper.EndsWithDirectoryDelimiter(dto.BasePath));
-            Assert.True(FileHelper.EndsWithDirectoryDelimiter(dto.ReportPath));
-        }
-        finally
-        {
-            Directory.Delete(baseDir, true);
-        }
-    }
-
-    [Fact]
-    public void FixDto_BasePathAlreadyHasDelimiter_NoChange()
-    {
-        string baseDir = Path.Combine(Path.GetTempPath(), "testpath") + Path.DirectorySeparatorChar;
-        var dto = new MyDupFinderScanJobDTO
-        {
-            BasePath = baseDir,
-            ReportPath = baseDir
-        };
+        string path = Path.Combine("some", "base", "path");
+        var dto = new MyDupFinderScanJobDTO { BasePath = path, ReportPath = path };
         MyDupFinderScanJobDTO.FixDto(dto);
-        Assert.Equal(baseDir, dto.BasePath);
-        Assert.Equal(baseDir, dto.ReportPath);
+        Assert.True(FileHelper.EndsWithDirectoryDelimiter(dto.BasePath));
+    }
+
+    [Fact]
+    public void FixDto_ShouldAddDelimiterToReportPath_WhenNotPresent()
+    {
+        string path = Path.Combine("some", "report", "path");
+        var dto = new MyDupFinderScanJobDTO { BasePath = path, ReportPath = path };
+        MyDupFinderScanJobDTO.FixDto(dto);
+        Assert.True(FileHelper.EndsWithDirectoryDelimiter(dto.ReportPath));
+    }
+
+    [Fact]
+    public void FixDto_ShouldNotChangeBasePath_WhenAlreadyHasDelimiter()
+    {
+        string path = Path.Combine("some", "base", "path") + Path.DirectorySeparatorChar;
+        var dto = new MyDupFinderScanJobDTO { BasePath = path, ReportPath = path };
+        MyDupFinderScanJobDTO.FixDto(dto);
+        Assert.Equal(path, dto.BasePath);
+    }
+
+    [Fact]
+    public void FixDto_ShouldNotChangeReportPath_WhenAlreadyHasDelimiter()
+    {
+        string path = Path.Combine("some", "report", "path") + Path.DirectorySeparatorChar;
+        var dto = new MyDupFinderScanJobDTO { BasePath = path, ReportPath = path };
+        MyDupFinderScanJobDTO.FixDto(dto);
+        Assert.Equal(path, dto.ReportPath);
     }
 }

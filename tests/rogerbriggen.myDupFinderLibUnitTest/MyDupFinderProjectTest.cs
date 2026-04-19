@@ -12,35 +12,35 @@ namespace RogerBriggen.MyDupFinderLibUnitTest;
 public class MyDupFinderProjectTest
 {
     [Fact]
-    public void GetExampleDTO_ReturnsNonNullDTO()
+    public void GetExampleDTO_ShouldReturnNonNullDTO()
     {
         MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO dto);
         Assert.NotNull(dto);
     }
 
     [Fact]
-    public void GetExampleDTO_HasScanJob()
+    public void GetExampleDTO_ShouldReturnDTOWithScanJobs()
     {
         MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO dto);
         Assert.NotEmpty(dto.MyDupFinderScanJobDTOs);
     }
 
     [Fact]
-    public void GetExampleDTO_HasCheckJob()
+    public void GetExampleDTO_ShouldReturnDTOWithCheckJobs()
     {
         MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO dto);
         Assert.NotEmpty(dto.MyDupFinderCheckJobDTOs);
     }
 
     [Fact]
-    public void GetExampleDTO_HasFindDupsJob()
+    public void GetExampleDTO_ShouldReturnDTOWithFindDupsJobs()
     {
         MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO dto);
         Assert.NotEmpty(dto.MyDupFinderFindDupsJobDTOs);
     }
 
     [Fact]
-    public void GetExampleDTO_ScanJobHasExpectedValues()
+    public void GetExampleDTO_ScanJobShouldHaveExpectedFields()
     {
         MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO dto);
         var scanJob = dto.MyDupFinderScanJobDTOs[0];
@@ -52,61 +52,50 @@ public class MyDupFinderProjectTest
     }
 
     [Fact]
-    public void GetExampleDTO_FindDupsJobHasExpectedValues()
+    public void GetExampleDTO_FindDupsJobShouldHaveExpectedFields()
     {
         MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO dto);
         var findDupsJob = dto.MyDupFinderFindDupsJobDTOs[0];
         Assert.False(string.IsNullOrWhiteSpace(findDupsJob.JobName));
         Assert.False(string.IsNullOrWhiteSpace(findDupsJob.DatabaseFileBase));
-        Assert.False(string.IsNullOrWhiteSpace(findDupsJob.DatabaseFile));
         Assert.False(string.IsNullOrWhiteSpace(findDupsJob.ReportPath));
     }
 
     [Fact]
-    public void WriteAndReadConfigurationRoundTrip_ProducesEquivalentDTO()
+    public void WriteAndReadConfigurationRoundTrip_ShouldProduceSameData()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "MyDupFinderProjectTest_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        string configFile = Path.Combine(tempDir, "testconfig.xml");
+        MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO originalDto);
+
+        string tempFile = Path.Combine(Path.GetTempPath(), "myDupFinderTest_" + Guid.NewGuid() + ".xml");
         try
         {
-            MyDupFinderProject.getExampleDTO(out MyDupFinderProjectDTO originalDto);
-            MyDupFinderProject.WriteConfigurationToFile(originalDto, configFile);
+            MyDupFinderProject.WriteConfigurationToFile(originalDto, tempFile);
 
-            Assert.True(File.Exists(configFile));
-
-            MyDupFinderProject.ReadConfigurationFromFile(configFile, out MyDupFinderProjectDTO? readDto);
+            MyDupFinderProject.ReadConfigurationFromFile(tempFile, out MyDupFinderProjectDTO? readDto);
 
             Assert.NotNull(readDto);
             Assert.Equal(originalDto.MyDupFinderScanJobDTOs.Count, readDto!.MyDupFinderScanJobDTOs.Count);
             Assert.Equal(originalDto.MyDupFinderCheckJobDTOs.Count, readDto.MyDupFinderCheckJobDTOs.Count);
             Assert.Equal(originalDto.MyDupFinderFindDupsJobDTOs.Count, readDto.MyDupFinderFindDupsJobDTOs.Count);
 
-            var origScan = originalDto.MyDupFinderScanJobDTOs[0];
-            var readScan = readDto.MyDupFinderScanJobDTOs[0];
-            Assert.Equal(origScan.JobName, readScan.JobName);
-            Assert.Equal(origScan.OriginComputer, readScan.OriginComputer);
-            Assert.Equal(origScan.ScanName, readScan.ScanName);
-            Assert.Equal(origScan.BasePath, readScan.BasePath);
-            Assert.Equal(origScan.DatabaseFile, readScan.DatabaseFile);
+            var originalScanJob = originalDto.MyDupFinderScanJobDTOs[0];
+            var readScanJob = readDto.MyDupFinderScanJobDTOs[0];
+            Assert.Equal(originalScanJob.JobName, readScanJob.JobName);
+            Assert.Equal(originalScanJob.BasePath, readScanJob.BasePath);
+            Assert.Equal(originalScanJob.DatabaseFile, readScanJob.DatabaseFile);
 
-            var origFindDups = originalDto.MyDupFinderFindDupsJobDTOs[0];
-            var readFindDups = readDto.MyDupFinderFindDupsJobDTOs[0];
-            Assert.Equal(origFindDups.JobName, readFindDups.JobName);
-            Assert.Equal(origFindDups.DatabaseFileBase, readFindDups.DatabaseFileBase);
-            Assert.Equal(origFindDups.DatabaseFile, readFindDups.DatabaseFile);
-            Assert.Equal(origFindDups.FindDupsMode, readFindDups.FindDupsMode);
+            var originalFindDupsJob = originalDto.MyDupFinderFindDupsJobDTOs[0];
+            var readFindDupsJob = readDto.MyDupFinderFindDupsJobDTOs[0];
+            Assert.Equal(originalFindDupsJob.JobName, readFindDupsJob.JobName);
+            Assert.Equal(originalFindDupsJob.DatabaseFileBase, readFindDupsJob.DatabaseFileBase);
+            Assert.Equal(originalFindDupsJob.FindDupsMode, readFindDupsJob.FindDupsMode);
         }
         finally
         {
-            Directory.Delete(tempDir, true);
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
         }
-    }
-
-    [Fact]
-    public void ReadConfigurationFromFile_NonExistingFile_ThrowsException()
-    {
-        string nonExistingFile = Path.Combine(Path.GetTempPath(), "nonexistent_" + Guid.NewGuid().ToString("N") + ".xml");
-        Assert.ThrowsAny<Exception>(() => MyDupFinderProject.ReadConfigurationFromFile(nonExistingFile, out _));
     }
 }

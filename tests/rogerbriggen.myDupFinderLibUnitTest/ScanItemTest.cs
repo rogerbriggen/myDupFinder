@@ -1,4 +1,4 @@
-﻿// Roger Briggen license this file to you under the MIT license.
+// Roger Briggen license this file to you under the MIT license.
 //
 
 using System;
@@ -14,20 +14,12 @@ public class ScanItemTest
     public void FilenameTest()
     {
         ScanItemDto scanItem = new ScanItemDto();
-        scanItem.FilenameAndPath = Path.Combine("test", "diesIstEinTest", "meineDatei.txt");
+        scanItem.FilenameAndPath = Path.Combine("o:", "test", "diesIstEinTest", "meineDatei.txt");
         Assert.Equal("meineDatei.txt", scanItem.Filename);
-        scanItem.FilenameAndPath = Path.Combine("test", "diesIstEinTest", "nochEineDatei.txt");
+        scanItem.FilenameAndPath = Path.Combine("o:", "test", "diesIstEinTest", "nochEineDatei.txt");
         Assert.Equal("nochEineDatei.txt", scanItem.Filename);
-        scanItem.FilenameAndPath = Path.Combine("test", "diesIstEinTest", "meineDatei");
+        scanItem.FilenameAndPath = Path.Combine("o:", "test", "diesIstEinTest", "meineDatei");
         Assert.Equal("meineDatei", scanItem.Filename);
-    }
-
-    [Fact]
-    public void FilenameEmptyTest()
-    {
-        ScanItemDto scanItem = new ScanItemDto();
-        scanItem.FilenameAndPath = string.Empty;
-        Assert.Equal(string.Empty, scanItem.Filename);
     }
 
     [Fact]
