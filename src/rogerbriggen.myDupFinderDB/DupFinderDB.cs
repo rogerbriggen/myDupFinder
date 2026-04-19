@@ -82,8 +82,8 @@ public class DubFinderDB : IDisposable
             // Load hashes from the second database
             using var secondDbContext = DubFinderContextFactory.CreateDubFinderContext(secondDatabaseFile);
             var secondDbHashes = secondDbContext.ScanItems?
+                .Where(s => s.FileSha512Hash != null && s.FileSha512Hash != string.Empty)
                 .Select(s => s.FileSha512Hash)
-                .Where(h => h != null && h != string.Empty)
                 .Distinct()
                 .ToList();
 

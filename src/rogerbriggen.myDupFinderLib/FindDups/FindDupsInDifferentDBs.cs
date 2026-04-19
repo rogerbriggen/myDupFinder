@@ -17,7 +17,6 @@ namespace RogerBriggen.MyDupFinderLib;
 /// </summary>
 internal class FindDupsInDifferentDBs : BasicRunner<FindDupsInDifferentDBs>, IFindDupsRunner
 {
-
     public FindDupsInDifferentDBs(MyDupFinderFindDupsJobDTO findDupsJobDTO, ILogger<FindDupsInDifferentDBs>? logger, IServiceProvider serviceProvider) : base(logger, serviceProvider)
     {
         FindDupsJobDTO = findDupsJobDTO;
@@ -49,7 +48,6 @@ internal class FindDupsInDifferentDBs : BasicRunner<FindDupsInDifferentDBs>, IFi
             _logger.LogInformation($"Found {dupList.Count} files in base DB that also exist in second DB. Total bytes: {totalBytesDuplicate:N0} which is {totalBytesDuplicate / 1024 / 1024:N0} MB");
             CreateDuplicateReport(FindDupsJobDTO.ReportPath + FindDupsJobDTO.JobName + " dupReport.csv", dupList, FindDupsJobDTO);
         }
-        dupList = null;
         DubFinderDB.Dispose();
     }
 
