@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Data.Sqlite;
 using RogerBriggen.MyDupFinderData;
 using RogerBriggen.MyDupFinderDB;
 using Xunit;
@@ -26,6 +27,8 @@ public class FindDupsInDifferentDBsTest : IDisposable
 
     public void Dispose()
     {
+        // Clear SQLite connection pool to release file locks before cleanup
+        SqliteConnection.ClearAllPools();
         if (Directory.Exists(_tempDir))
         {
             Directory.Delete(_tempDir, true);
