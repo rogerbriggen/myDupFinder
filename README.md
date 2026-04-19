@@ -3,7 +3,7 @@ Find duplicates of files (or checks if the backup still is ok...)
 
 ## Project state: in develompent... unusable right now
 
-Build with latest dotnet relased:   ![.NET Core](https://github.com/rogerbriggen/myDupFinder/workflows/.NET%20Core/badge.svg)
+Build with latest dotnet relased:   ![.NET 10](https://github.com/rogerbriggen/myDupFinder/workflows/.NET%2010/badge.svg)
 
 ## Roadmap:
 - :heavy_check_mark: Scan Files and generate hash information
