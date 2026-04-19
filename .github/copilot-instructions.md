@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-myDupFinder is a .NET 10 C# application for finding duplicate files by scanning directories and computing file hashes. It stores file metadata and SHA-512 hashes in SQLite databases and can generate CSV reports of duplicates.
+myDupFinder is a .NET 10 C# application for finding duplicate files by scanning directories and computing file hashes. It stores file metadata and SHA-512 hashes in SQLite databases and can generate CSV reports of duplicates. Because it is usually a lot of files, the code needs to be fast but even more important correct. Also, pause and resume is important since scanning may take multiple days.
 
 ## Solution Structure
 
