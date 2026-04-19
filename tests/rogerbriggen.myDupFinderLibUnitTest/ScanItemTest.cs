@@ -14,11 +14,11 @@ public class ScanItemTest
     public void FilenameTest()
     {
         ScanItemDto scanItem = new ScanItemDto();
-        scanItem.FilenameAndPath = Path.Combine("o:", "test", "diesIstEinTest", "meineDatei.txt");
+        scanItem.FilenameAndPath = Path.Combine("test", "diesIstEinTest", "meineDatei.txt");
         Assert.Equal("meineDatei.txt", scanItem.Filename);
-        scanItem.FilenameAndPath = Path.Combine("o:", "test", "diesIstEinTest", "nochEineDatei.txt");
+        scanItem.FilenameAndPath = Path.Combine("test", "diesIstEinTest", "nochEineDatei.txt");
         Assert.Equal("nochEineDatei.txt", scanItem.Filename);
-        scanItem.FilenameAndPath = Path.Combine("o:", "test", "diesIstEinTest", "meineDatei");
+        scanItem.FilenameAndPath = Path.Combine("test", "diesIstEinTest", "meineDatei");
         Assert.Equal("meineDatei", scanItem.Filename);
     }
 
