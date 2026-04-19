@@ -101,4 +101,25 @@ public class MyDupFinderFindDupsJobDTOTest
         MyDupFinderFindDupsJobDTO.FixDto(dto);
         Assert.Equal(path, dto.ReportPath);
     }
+
+    [Fact]
+    public void CheckSanity_ShouldNotThrow_WhenDatabaseFileIsInScanDBs()
+    {
+        var scanDBs = new List<string>();
+        var dto = CreateValidDto(scanDBs);
+        var secondDbFile = Path.Combine(Path.GetTempPath(), "second.db");
+        scanDBs.Add(secondDbFile);
+        dto.DatabaseFile = secondDbFile;
+        // Should not throw because both DatabaseFileBase and DatabaseFile are in scanDBs
+        MyDupFinderFindDupsJobDTO.CheckSanity(dto, scanDBs);
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenDatabaseFileNotInScanDBsAndDoesNotExist()
+    {
+        var scanDBs = new List<string>();
+        var dto = CreateValidDto(scanDBs);
+        dto.DatabaseFile = Path.Combine(Path.GetTempPath(), "nonexistent_second.db");
+        Assert.Throws<ParameterException>(() => MyDupFinderFindDupsJobDTO.CheckSanity(dto, scanDBs));
+    }
 }

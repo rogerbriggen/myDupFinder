@@ -3,6 +3,7 @@
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace RogerBriggen.MyDupFinderDB;
 
@@ -22,6 +23,7 @@ public class DubFinderContextFactory : IDesignTimeDbContextFactory<DubFinderCont
     {
         var optionsBuilder = new DbContextOptionsBuilder<DubFinderContext>();
         optionsBuilder.UseSqlite($"Data Source={dataSourceName}");
+        optionsBuilder.ConfigureWarnings(w => w.Log(RelationalEventId.PendingModelChangesWarning));
         return optionsBuilder.Options;
     }
 
