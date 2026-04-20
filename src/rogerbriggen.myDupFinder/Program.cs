@@ -124,6 +124,26 @@ class Program
                         }
                     }
 
+                    //Refresh Jobs
+                    foreach (MyDupFinderRefreshJobDTO refreshDto in dto.MyDupFinderRefreshJobDTOs)
+                    {
+                        using (var refreshService = serviceProvider.GetService<RefreshService>())
+                        {
+                            if (refreshService is null)
+                            {
+                                logger.LogError("No refreshService registered!");
+                                return;
+                            }
+                            logger.LogInformation("Running Job {JobName}...", refreshDto.JobName);
+                            ThreadStart ts = delegate { refreshService.StartRefresh(refreshDto); };
+                            var t = new Thread(ts);
+                            t.Name = "RefreshService";
+                            t.Start();
+                            //Wait for t or for a key press
+                            WaitForThreadOrKeyPress(logger, refreshDto.JobName, refreshService, t);
+                        }
+                    }
+
 
                     logger.LogInformation("All Jobs finished");
                 }
@@ -244,6 +264,7 @@ class Program
         }
         services.AddTransient<ScanService>();
         services.AddTransient<FindDupsService>();
+        services.AddTransient<RefreshService>();
 
 
         Log.Information("**** Opening log... ****");

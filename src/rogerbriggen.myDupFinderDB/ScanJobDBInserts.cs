@@ -187,6 +187,88 @@ public class ScanJobDBInserts : IDisposable
 
     }
 
+    /// <summary>
+    /// Gets all scan items from the database that belong to the specified base path.
+    /// Used by refresh to know what files are currently tracked.
+    /// </summary>
+    /// <param name="basePath">The base path to filter by.</param>
+    /// <returns>A list of scan items with the specified base path, or an empty list if none found.</returns>
+    public List<ScanItemDto> GetAllItemsByBasePath(string basePath)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetAllItemsByBasePath called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.ScanItems?.Where(s => s.PathBase == basePath).ToList() ?? new List<ScanItemDto>();
+        }
+    }
+
+    /// <summary>
+    /// Updates an existing scan item in the database.
+    /// Used by refresh when file size or modification date has changed and the hash needs recalculation.
+    /// </summary>
+    public void UpdateItem(ScanItemDto existingItem, long newFileSize, DateTime newFileLastModificationUTC, string newFileSha512Hash, DateTime scanDateUTC)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("UpdateItem called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            _dbContext.Attach(existingItem);
+            existingItem.FileSize = newFileSize;
+            existingItem.FileLastModificationUTC = newFileLastModificationUTC;
+            existingItem.FileSha512Hash = newFileSha512Hash;
+            existingItem.LastScanDateUTC = scanDateUTC;
+            existingItem.LastSha512ScanDateUTC = scanDateUTC;
+            _dbContext.Entry(existingItem).State = EntityState.Modified;
+            _dbContext.SaveChanges();
+            _dbContext.Entry(existingItem).State = EntityState.Detached;
+            TotalSuccessCount++;
+        }
+    }
+
+    /// <summary>
+    /// Updates the LastScanDateUTC of an existing scan item without recalculating the hash.
+    /// Used by refresh when file size and date are unchanged (the file has not changed).
+    /// </summary>
+    public void TouchItem(ScanItemDto existingItem, DateTime scanDateUTC)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("TouchItem called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            _dbContext.Attach(existingItem);
+            existingItem.LastScanDateUTC = scanDateUTC;
+            _dbContext.Entry(existingItem).State = EntityState.Modified;
+            _dbContext.SaveChanges();
+            _dbContext.Entry(existingItem).State = EntityState.Detached;
+        }
+    }
+
+    /// <summary>
+    /// Removes a scan item from the database.
+    /// Used by refresh when a file no longer exists on disk.
+    /// </summary>
+    public void RemoveItem(ScanItemDto item)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("RemoveItem called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            _dbContext.Attach(item);
+            _dbContext.Remove(item);
+            _dbContext.SaveChanges();
+            _dbContext.Entry(item).State = EntityState.Detached;
+        }
+    }
+
 
     public void WriteChanges()
     {

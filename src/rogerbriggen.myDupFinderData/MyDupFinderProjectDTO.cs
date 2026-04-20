@@ -12,10 +12,12 @@ public class MyDupFinderProjectDTO
         MyDupFinderScanJobDTOs = new List<MyDupFinderScanJobDTO>();
         MyDupFinderCheckJobDTOs = new List<MyDupFinderCheckJobDTO>();
         MyDupFinderFindDupsJobDTOs = new List<MyDupFinderFindDupsJobDTO>();
+        MyDupFinderRefreshJobDTOs = new List<MyDupFinderRefreshJobDTO>();
     }
     public List<MyDupFinderScanJobDTO> MyDupFinderScanJobDTOs { get; }
     public List<MyDupFinderCheckJobDTO> MyDupFinderCheckJobDTOs { get; }
     public List<MyDupFinderFindDupsJobDTO> MyDupFinderFindDupsJobDTOs { get; }
+    public List<MyDupFinderRefreshJobDTO> MyDupFinderRefreshJobDTOs { get; }
 
 
     public static void CheckSanity(MyDupFinderProjectDTO dto)
@@ -30,6 +32,10 @@ public class MyDupFinderProjectDTO
         {
             MyDupFinderFindDupsJobDTO.CheckSanity(findDupsJobDto, scanDBs);
         }
+        foreach (MyDupFinderRefreshJobDTO refreshJobDto in dto.MyDupFinderRefreshJobDTOs)
+        {
+            MyDupFinderRefreshJobDTO.CheckSanity(refreshJobDto);
+        }
     }
 
 
@@ -42,6 +48,10 @@ public class MyDupFinderProjectDTO
         foreach (MyDupFinderFindDupsJobDTO findDupsJobDto in dto.MyDupFinderFindDupsJobDTOs)
         {
             MyDupFinderFindDupsJobDTO.FixDto(findDupsJobDto);
+        }
+        foreach (MyDupFinderRefreshJobDTO refreshJobDto in dto.MyDupFinderRefreshJobDTOs)
+        {
+            MyDupFinderRefreshJobDTO.FixDto(refreshJobDto);
         }
     }
 }

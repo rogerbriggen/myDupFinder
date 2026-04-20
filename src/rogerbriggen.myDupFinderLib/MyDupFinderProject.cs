@@ -62,5 +62,15 @@ public static class MyDupFinderProject
         myDupFinderFindDupsJobDTO.DatabaseFile = @"m:\finddupdb\newdb.db";
         myDupFinderFindDupsJobDTO.ReportPath = @"m:\finddupdb\";
         myDupFinderProjectDTO.MyDupFinderFindDupsJobDTOs.Add(myDupFinderFindDupsJobDTO);
+
+        //Refresh
+        var myDupFinderRefreshJobDTO = new MyDupFinderRefreshJobDTO();
+        myDupFinderRefreshJobDTO.JobName = "Example RefreshJob name";
+        myDupFinderRefreshJobDTO.OriginComputer = "E6600";
+        myDupFinderRefreshJobDTO.BasePath = @"m:\Test";
+        myDupFinderRefreshJobDTO.ScanName = "Backup of old computer";
+        myDupFinderRefreshJobDTO.DatabaseFile = @"m:\finddupdb\base.db";
+        myDupFinderRefreshJobDTO.ReportPath = @"m:\finddupdb\";
+        myDupFinderProjectDTO.MyDupFinderRefreshJobDTOs.Add(myDupFinderRefreshJobDTO);
     }
 }
