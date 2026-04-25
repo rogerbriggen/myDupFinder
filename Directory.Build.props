@@ -22,6 +22,6 @@
     <!-- Add source link for GitHub -->
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.202" PrivateAssets="All"/>
     <!-- Add GitVersioning -->
-    <PackageReference Include="Nerdbank.GitVersioning" Version="3.6.139" PrivateAssets="All"/>
+    <PackageReference Include="Nerdbank.GitVersioning" Version="3.9.50" PrivateAssets="All"/>
   </ItemGroup>
 </Project>
