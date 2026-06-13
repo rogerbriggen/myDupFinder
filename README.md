@@ -1,4 +1,5 @@
 # myDupFinder
+
 Find duplicates of files (or checks if the backup still is ok...)
 
 ## Project state: in develompent... unusable right now
@@ -99,12 +100,14 @@ The `MyDupFinderFindDupsJobDTO` supports two modes of operation:
 Refresh jobs update an existing database to reflect the current state of the files on disk. This is useful when files have been added, modified, or deleted since the last scan.
 
 The refresh is smart and fast:
+
 - **New files** on disk are added to the database with their SHA-512 hash.
 - **Modified files** (where the file size or last modification date has changed) are updated with a recalculated hash.
 - **Unchanged files** (same size and date) skip hash recalculation — only the last scan date is updated.
 - **Deleted files** (in the database but no longer on disk) are removed from the database.
 
-## Roadmap:
+## Roadmap
+
 - :heavy_check_mark: Scan Files and generate hash information
 - :heavy_check_mark: Parallelize scan to all cores (this works better than expected... the computer is unusable...)
 - :heavy_check_mark: Single threaded scan...
