@@ -15,8 +15,11 @@ myDupFinder exampleproject projectfile.xml
 # Validate a project file without running (dry run)
 myDupFinder dryrun projectfile.xml
 
-# Run the duplicate finder with a project file
+# Run the duplicate finder with a project file (executes all scan, check, find-dups, and refresh jobs)
 myDupFinder run projectfile.xml
+
+# Apply a check report back to the database referenced in its header
+myDupFinder applyCheck check-MyJob-20260613-100000.csv
 ```
 
 ## Project File (projectfile.xml)
@@ -106,6 +109,37 @@ The refresh is smart and fast:
 - **Unchanged files** (same size and date) skip hash recalculation — only the last scan date is updated.
 - **Deleted files** (in the database but no longer on disk) are removed from the database.
 
+### Check Jobs
+
+Check jobs verify that the files on disk still match what was recorded in the database. Their main purpose is to detect **bit rot** (silent corruption that preserves size and modification date) and any other unwanted changes. Unlike refresh, a check job **never modifies the database** — it writes a CSV report instead, which you can review and then replay back to the database with `applyCheck`.
+
+Every file on disk is classified into one of these categories:
+
+- **BitRotSuspect** — size and modification date match the database, but the SHA-512 hash differs. The headline case for silent corruption.
+- **Modified** — size or modification date differs and the hash differs as well. A normal edit.
+- **ModifiedNoHashChange** — size or modification date differs but the hash is unchanged. The file was touched (e.g. mtime rewritten by a tool) but its content is the same.
+- **MissingOnDisk** — the database has a row for a file that is no longer on disk.
+- **NewOnDisk** — there is a file on disk that has no row in the database yet.
+
+`Ok` files (everything matches) are not written to the report.
+
+The report file is `check-{JobName}-{timestamp}.csv` under the job's `ReportPath`. It is RFC 4180–quoted, includes the freshly computed disk hashes, and starts with a self-contained `# Key=Value` header so `applyCheck` knows which database to update without needing the project file again.
+
+Two flags tune behavior:
+
+- **SkipHashCheck** — skip SHA-512 recomputation; only compare size and modification date. Much faster on huge corpora, but cannot detect `BitRotSuspect`.
+- **IgnoreBasePath** — match database rows by their **relative sub-path** under `BasePath` even if their recorded `PathBase` differs. Useful when the whole tree was moved to a new drive letter or copied to a different computer; matched rows are flagged `PathMoved=true` and `applyCheck` will rewrite the path.
+
+### Applying a Check Report
+
+`applyCheck` reads a check CSV and applies the changes to the database recorded in the CSV header:
+
+- **BitRotSuspect / Modified / ModifiedNoHashChange** rows update size, modification date, hash, and last-scan date. When `PathMoved=true`, the path is rewritten as well. Hashes are taken straight from the CSV — no re-hashing.
+- **MissingOnDisk** rows remove the matching database entry.
+- **NewOnDisk** rows insert a new database entry using the hash captured during check. Rows without a hash (produced by a `SkipHashCheck` run) are skipped.
+
+Before running `applyCheck`, open the CSV and delete any row you do not want applied — for instance a `BitRotSuspect` you want to investigate manually first. Anything left in the CSV will be applied.
+
 ## Roadmap
 
 - :heavy_check_mark: Scan Files and generate hash information
@@ -122,4 +156,5 @@ The refresh is smart and fast:
 - Visually show the dups and manually change the state
 - Delete / Move the dups
 - :heavy_check_mark: Refresh a database
-- Check a database with the original files (bit rot, changes of files)
+- :heavy_check_mark: Check a database with the original files (bit rot, changes of files) and create a csv report.
+- :heavy_check_mark: Update the database from the csv report so no need to rehash everything.

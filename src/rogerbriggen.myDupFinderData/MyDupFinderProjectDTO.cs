@@ -36,6 +36,10 @@ public class MyDupFinderProjectDTO
         {
             MyDupFinderRefreshJobDTO.CheckSanity(refreshJobDto);
         }
+        foreach (MyDupFinderCheckJobDTO checkJobDto in dto.MyDupFinderCheckJobDTOs)
+        {
+            MyDupFinderCheckJobDTO.CheckSanity(checkJobDto);
+        }
     }
 
 
@@ -52,6 +56,10 @@ public class MyDupFinderProjectDTO
         foreach (MyDupFinderRefreshJobDTO refreshJobDto in dto.MyDupFinderRefreshJobDTOs)
         {
             MyDupFinderRefreshJobDTO.FixDto(refreshJobDto);
+        }
+        foreach (MyDupFinderCheckJobDTO checkJobDto in dto.MyDupFinderCheckJobDTOs)
+        {
+            MyDupFinderCheckJobDTO.FixDto(checkJobDto);
         }
     }
 }
