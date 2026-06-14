@@ -93,6 +93,8 @@ The `MyDupFinderFindDupsJobDTO` supports two modes of operation:
 - **Same database**: Leave `DatabaseFile` empty to find duplicates within `DatabaseFileBase` only.
 - **Cross-database**: Set `DatabaseFile` to a second database path to find files in `DatabaseFileBase` that also exist in `DatabaseFile`. This allows you to scan multiple folders into separate databases and then compare them.
 
+You get a csv report. The path in the csv report is alsways from the base database.
+
 ### FindDupsMode Values
 
 - `FindOnlyDups` — reports only duplicate files
@@ -148,9 +150,11 @@ Before running `applyCheck`, open the CSV and delete any row you do not want app
 - :heavy_check_mark: Store all the file and hash information in a sqlite db
 - :heavy_check_mark: Cancel / Resume scan
 - :heavy_check_mark: Find dups in one database
+
     ```sql
     SELECT * FROM ScanItems WHERE FileSha512Hash IN (SELECT FileSha512Hash FROM ScanItems GROUP BY FileSHA512Hash HAVING COUNT(*) >1)
-    ``` 
+    ```
+
 - :heavy_check_mark: Create .csv reports of dups
 - :heavy_check_mark: Find dups in different databases
 - Visually show the dups and manually change the state

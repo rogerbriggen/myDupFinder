@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MyDupFinderProjectDTO xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <!--
+  <MyDupFinderScanJobDTOs>
+    <MyDupFinderScanJobDTO>
+      <JobName>ScanDemoFiles</JobName>
+      <BasePath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\filesBase</BasePath>
+      <OriginComputer>E6600</OriginComputer>
+      <ScanName>DemoFiles Base for testing</ScanName>
+      <DatabaseFile>O:\DatenP\Programmieren\repos\myDupFinder\testdata\base.db</DatabaseFile>
+      <ReportPath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\</ReportPath>
+    </MyDupFinderScanJobDTO>
+  </MyDupFinderScanJobDTOs>
+  <MyDupFinderCheckJobDTOs>
+    <MyDupFinderCheckJobDTO>
+      <ScanJobDTO>
+        <JobName>Example checkjob name</JobName>
+        <BasePath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\files</BasePath>
+        <OriginComputer>E6600</OriginComputer>
+        <ScanName>Backup of old computer</ScanName>
+        <DatabaseFile>O:\DatenP\Programmieren\repos\myDupFinder\testdata\base.db</DatabaseFile>
+        <ReportPath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\</ReportPath>
+      </ScanJobDTO>
+      <IgnoreBasePath>false</IgnoreBasePath>
+      <SkipHashCheck>true</SkipHashCheck>
+    </MyDupFinderCheckJobDTO>
+  </MyDupFinderCheckJobDTOs>
+  -->
+  <MyDupFinderFindDupsJobDTOs>
+    <MyDupFinderFindDupsJobDTO>
+      <JobName>Demo FindDupsJob</JobName>
+      <DatabaseFileBase>O:\DatenP\Programmieren\repos\myDupFinder\testdata\base.db</DatabaseFileBase>
+      <DatabaseFile>O:\DatenP\Programmieren\repos\myDupFinder\testdata\newfiles.db</DatabaseFile>
+      <FindDupsMode>FindOnlyDups</FindDupsMode>
+      <ReportPath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\</ReportPath>
+    </MyDupFinderFindDupsJobDTO>
+  </MyDupFinderFindDupsJobDTOs>
+  <!--
+  <MyDupFinderRefreshJobDTOs>
+    <MyDupFinderRefreshJobDTO>
+      <JobName>Example RefreshJob name</JobName>
+      <BasePath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\files</BasePath>
+      <OriginComputer>E6600</OriginComputer>
+      <ScanName>DemoFiles for testing</ScanName>
+      <DatabaseFile>O:\DatenP\Programmieren\repos\myDupFinder\testdata\base.db</DatabaseFile>
+      <ReportPath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\</ReportPath>
+    </MyDupFinderRefreshJobDTO>
+  </MyDupFinderRefreshJobDTOs>
+  -->
+</MyDupFinderProjectDTO>
