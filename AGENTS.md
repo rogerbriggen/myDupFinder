@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides instructions for Claude Code (and other AI assistants) working with this repository.
+This file provides instructions for Claude Code, Github Copilot, Codex (and other AI assistants) working with this repository.
 
 For detailed project instructions, conventions, and architecture details, see:
 [.github/copilot-instructions.md](.github/copilot-instructions.md)
