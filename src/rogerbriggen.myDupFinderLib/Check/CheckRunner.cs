@@ -61,7 +61,9 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         var scanJob = CheckJobDTO.ScanJobDTO;
         var basePath = scanJob.BasePath;
 
-        var existingItems = DbInserts.GetAllItemsByBasePath(basePath);
+        var existingItems = CheckJobDTO.IgnoreBasePath
+            ? DbInserts.GetAllItemsByScanIdentity(scanJob.OriginComputer, scanJob.ScanName)
+            : DbInserts.GetAllItemsByBasePath(basePath);
         var existingByPath = new Dictionary<string, ScanItemDto>(StringComparer.Ordinal);
         foreach (var item in existingItems)
         {
@@ -69,7 +71,11 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         }
         var seenIds = new HashSet<Guid>();
 
-        _logger.LogInformation("Check: Found {count} existing items in database for base path {basePath}", existingItems.Count, basePath);
+        _logger.LogInformation(
+            "Check: Found {count} existing items in database for base path {basePath} (IgnoreBasePath={ignoreBasePath})",
+            existingItems.Count,
+            basePath,
+            CheckJobDTO.IgnoreBasePath);
 
         var reportPath = BuildReportPath(scanJob);
         ReportFilePath = reportPath;
@@ -180,7 +186,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         }
         else if (CheckJobDTO.IgnoreBasePath)
         {
-            matched = FindByRelativeSuffix(currentFile, basePath, seenIds);
+            matched = FindByRelativePath(currentFile, basePath, existingByPath.Values, seenIds);
             pathMoved = matched is not null;
         }
 
@@ -307,17 +313,10 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         CheckReportCsv.WriteRow(writer, fullRow);
     }
 
-    private ScanItemDto? FindByRelativeSuffix(string currentFile, string basePath, HashSet<Guid> seenIds)
+    private static ScanItemDto? FindByRelativePath(string currentFile, string basePath, IEnumerable<ScanItemDto> candidates, HashSet<Guid> seenIds)
     {
-        if (!currentFile.StartsWith(basePath, StringComparison.Ordinal))
-        {
-            return null;
-        }
-        var relative = currentFile.Substring(basePath.Length);
-        // Use a leading separator so we don't accidentally match "anothersub\file" against "sub\file".
-        var suffix = Path.DirectorySeparatorChar + relative;
-        var candidates = DbInserts.GetItemsByRelativeSuffix(suffix);
-        if (candidates.Count == 0)
+        var relative = GetRelativePathIfUnderBase(currentFile, basePath);
+        if (relative is null)
         {
             return null;
         }
@@ -333,9 +332,23 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             {
                 continue;
             }
+            var candidateRelative = GetRelativePathIfUnderBase(candidate.FilenameAndPath, candidate.PathBase);
+            if (!string.Equals(candidateRelative, relative, StringComparison.Ordinal))
+            {
+                continue;
+            }
             return candidate;
         }
         return null;
+    }
+
+    private static string? GetRelativePathIfUnderBase(string path, string basePath)
+    {
+        if (!path.StartsWith(basePath, StringComparison.Ordinal))
+        {
+            return null;
+        }
+        return path.Substring(basePath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     private string? ComputeHashOrNull(string filePath)

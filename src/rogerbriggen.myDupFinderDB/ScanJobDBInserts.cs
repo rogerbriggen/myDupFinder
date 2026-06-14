@@ -206,6 +206,24 @@ public class ScanJobDBInserts : IDisposable
     }
 
     /// <summary>
+    /// Gets all scan items that belong to the specified logical scan identity.
+    /// Used by check jobs with IgnoreBasePath so moved trees can still report missing old-base rows.
+    /// </summary>
+    public List<ScanItemDto> GetAllItemsByScanIdentity(string originComputer, string scanName)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetAllItemsByScanIdentity called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.ScanItems?
+                .Where(s => s.OriginComputer == originComputer && s.ScanName == scanName)
+                .ToList() ?? new List<ScanItemDto>();
+        }
+    }
+
+    /// <summary>
     /// Updates an existing scan item in the database.
     /// Used by refresh when file size or modification date has changed and the hash needs recalculation.
     /// </summary>

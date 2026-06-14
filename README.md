@@ -130,7 +130,7 @@ The report file is `check-{JobName}-{timestamp}.csv` under the job's `ReportPath
 Two flags tune behavior:
 
 - **SkipHashCheck** — skip SHA-512 recomputation; only compare size and modification date. Much faster on huge corpora, but cannot detect `BitRotSuspect`.
-- **IgnoreBasePath** — match database rows by their **relative sub-path** under `BasePath` even if their recorded `PathBase` differs. Useful when the whole tree was moved to a new drive letter or copied to a different computer; matched rows are flagged `PathMoved=true` and `applyCheck` will rewrite the path.
+- **IgnoreBasePath** — match database rows by their **relative sub-path** under `BasePath` even if their recorded `PathBase` differs. Useful when the whole tree was moved to a new drive letter or copied to a different computer. The check is scoped to rows with the same `OriginComputer` and `ScanName` as the check job. Files found at the new base path are flagged `PathMoved=true`, and `applyCheck` will rewrite their stored path. Rows from the old base path that no longer exist under the new base path are reported as `MissingOnDisk`, so `applyCheck` can remove them.
 
 ### Applying a Check Report
 

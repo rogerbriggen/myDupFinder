@@ -283,6 +283,34 @@ public class CheckServiceTest : IDisposable
     }
 
     [Fact]
+    public void IgnoreBasePath_ReportsMissingRowsFromOldBasePath()
+    {
+        var oldBase = EnsureBasePathTrailingSep(Path.Combine(_tempDir, "OLD"));
+        var content = new byte[] { 7, 7, 7 };
+        var mtime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var movedOldFile = Path.Combine(oldBase, "sub", "moved.dat");
+        SeedDb(movedOldFile, oldBase, content, mtime);
+        var missingOldFile = Path.Combine(oldBase, "sub", "missing.dat");
+        SeedDb(missingOldFile, oldBase, new byte[] { 8, 8, 8 }, mtime);
+
+        var movedNewFile = CreateFile(Path.Combine("sub", "moved.dat"), content, mtime);
+
+        var rows = RunCheckAndRead(BuildJob(ignoreBasePath: true));
+
+        Assert.Equal(2, rows.Length);
+        Assert.Contains(rows, r =>
+            r.Category == CheckCategory.ModifiedNoHashChange &&
+            r.PathMoved &&
+            r.FilenameAndPathDB == movedOldFile &&
+            r.FilenameAndPathDisk == movedNewFile);
+        Assert.Contains(rows, r =>
+            r.Category == CheckCategory.MissingOnDisk &&
+            r.FilenameAndPathDB == missingOldFile &&
+            r.PathBaseDB == oldBase);
+    }
+
+    [Fact]
     public void EndToEnd_CheckThenApplyThenReCheck_LeavesDbInSync()
     {
         var basePathSep = EnsureBasePathTrailingSep(_basePath);
