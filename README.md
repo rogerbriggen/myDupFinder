@@ -91,14 +91,48 @@ The application is configured through an XML project file. You can generate an e
 The `MyDupFinderFindDupsJobDTO` supports two modes of operation:
 
 - **Same database**: Leave `DatabaseFile` empty to find duplicates within `DatabaseFileBase` only.
-- **Cross-database**: Set `DatabaseFile` to a second database path to find files in `DatabaseFileBase` that also exist in `DatabaseFile`. This allows you to scan multiple folders into separate databases and then compare them.
+- **Cross-database**: Set `DatabaseFile` to a second database path to compare two scans (e.g. an original and a backup). Files are aligned across the two DBs by their path *relative to* `PathBase`, so the absolute roots can differ (`C:\backup` vs `D:\original`).
 
-You get a csv report. The path in the csv report is alsways from the base database.
+The find-duplicates job writes a CSV report to `<ReportPath><JobName> dupReport.csv`. It does not modify either database (the base DB may be schema-migrated on open if it is older).
 
 ### FindDupsMode Values
 
-- `FindOnlyDups` — reports only duplicate files
-- `FindDupsTheWholeLot` — reports everything: duplicates, missing files, new files, changed files
+- `FindOnlyDups` — reports only duplicate files.
+- `FindDupsTheWholeLot` — reports every file with a category, so you can drive a UI that shows the full picture and act on individual rows.
+
+### Find Duplicates Report Format
+
+The report is a `;`-separated CSV with a header row:
+
+```
+FilenameAndPath;FileSize;FileSha512Hash;Category;Source;GroupId
+```
+
+| Column | Meaning |
+|---|---|
+| `FilenameAndPath` | Full path of the file, quoted; embedded `"` is doubled (RFC 4180 style). |
+| `FileSize` | File size in bytes, as recorded in the database. |
+| `FileSha512Hash` | SHA-512 hash, as recorded in the database. Empty if the row has no hash. |
+| `Category` | One of `Duplicate`, `Moved`, `Changed`, `Missing`, `New`, `Unique` (see below). |
+| `Source` | `Base` (row's file is in `DatabaseFileBase`) or `Second` (row's file is in `DatabaseFile`). Same-DB jobs always emit `Base`. |
+| `GroupId` | Integer that ties related rows together. Two rows with the same `GroupId` describe the same logical file across DBs (or different copies of the same content). Singletons get their own `GroupId`. |
+
+#### Categories
+
+| Category | When emitted | Sides emitted |
+|---|---|---|
+| `Duplicate` | Cross-DB: same relative path + same hash. Same-DB: a hash that appears more than once. | Cross-DB: both `Base` and `Second` rows (paired by `GroupId`). Same-DB: every copy. |
+| `Changed` | Cross-DB: same relative path, different hash. | Both `Base` and `Second` rows. |
+| `Moved` | Cross-DB: hash matches on the other side at a *different* relative path. | All `Base` and `Second` rows with that hash, sharing one `GroupId`. |
+| `Missing` | Cross-DB only: file exists in base DB, no path or hash match in second DB. | `Base` only. |
+| `New` | Cross-DB only: file exists in second DB, no path or hash match in base DB. | `Second` only. |
+| `Unique` | Same-DB whole-lot only: a hash that appears exactly once in the database. | The single row. |
+
+Notes:
+
+- `FindOnlyDups` emits only `Duplicate` rows. In the cross-DB case only the `Base` side is included (hash-only intersection — there is no path/changed/moved analysis in this mode).
+- The report is sorted so that paired rows appear together (by `Category`, then `GroupId`, then `Source`, then path).
+- For a "file-explorer-like" UI, treat each row as one physical file on disk. Use `Source` to know which side it lives on, `GroupId` to find its partners, and `FilenameAndPath` to actually act on it (e.g. delete).
 
 ### Refresh Jobs
 

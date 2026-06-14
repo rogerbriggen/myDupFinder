@@ -54,10 +54,46 @@ public class DubFinderDB : IDisposable
             //     .ToList
 
             var duplicates = _dbContext.ScanItems?
-                .FromSqlInterpolated($"SELECT * FROM ScanItems WHERE FileSha512Hash IN (SELECT FileSha512Hash FROM ScanItems GROUP BY FileSHA512Hash HAVING COUNT(*) >1)")
+                .FromSqlInterpolated($"SELECT * FROM ScanItems WHERE FileSha512Hash IN (SELECT FileSha512Hash FROM ScanItems GROUP BY FileSHA512Hash HAVING COUNT(*) >1) ORDER BY FileSha512Hash")
                 .ToList();
             return duplicates;
         }
+    }
+
+    /// <summary>
+    /// Returns every ScanItem from the current (base) database, ordered by hash then path.
+    /// Used by FindDupsTheWholeLot to categorize each file as Duplicate or Unique.
+    /// </summary>
+    public List<ScanItemDto>? GetAllScanItems()
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetAllScanItems called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.ScanItems?
+                .OrderBy(s => s.FileSha512Hash)
+                .ThenBy(s => s.FilenameAndPath)
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// Returns every ScanItem from another database file. Used by FindDupsTheWholeLot in cross-DB mode.
+    /// </summary>
+    public List<ScanItemDto>? GetAllScanItemsFromOtherDB(string secondDatabaseFile)
+    {
+        if (string.IsNullOrWhiteSpace(secondDatabaseFile))
+        {
+            throw new ArgumentException("secondDatabaseFile may not be null or empty", nameof(secondDatabaseFile));
+        }
+
+        using var secondDbContext = DubFinderContextFactory.CreateDubFinderContext(secondDatabaseFile);
+        return secondDbContext.ScanItems?
+            .OrderBy(s => s.FileSha512Hash)
+            .ThenBy(s => s.FilenameAndPath)
+            .ToList();
     }
 
     /// <summary>
