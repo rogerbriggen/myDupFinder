@@ -206,6 +206,24 @@ public class ScanJobDBInserts : IDisposable
     }
 
     /// <summary>
+    /// Gets all scan items that belong to the specified logical scan identity.
+    /// Used by check jobs with IgnoreBasePath so moved trees can still report missing old-base rows.
+    /// </summary>
+    public List<ScanItemDto> GetAllItemsByScanIdentity(string originComputer, string scanName)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetAllItemsByScanIdentity called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.ScanItems?
+                .Where(s => s.OriginComputer == originComputer && s.ScanName == scanName)
+                .ToList() ?? new List<ScanItemDto>();
+        }
+    }
+
+    /// <summary>
     /// Updates an existing scan item in the database.
     /// Used by refresh when file size or modification date has changed and the hash needs recalculation.
     /// </summary>
@@ -266,6 +284,150 @@ public class ScanJobDBInserts : IDisposable
             _dbContext.Remove(item);
             _dbContext.SaveChanges();
             _dbContext.Entry(item).State = EntityState.Detached;
+        }
+    }
+
+    /// <summary>
+    /// Finds the scan item with the exact FilenameAndPath, or null if none exists.
+    /// </summary>
+    public ScanItemDto? GetItemByPath(string filenameAndPath)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetItemByPath called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.ScanItems?.FirstOrDefault(s => s.FilenameAndPath == filenameAndPath);
+        }
+    }
+
+    /// <summary>
+    /// Finds scan items whose FilenameAndPath ends with the given relative sub-path.
+    /// Used when IgnoreBasePath is set so files moved to a different drive/computer
+    /// can still be matched by their position under their original base path.
+    /// </summary>
+    public List<ScanItemDto> GetItemsByRelativeSuffix(string relativeSuffix)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetItemsByRelativeSuffix called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.ScanItems?.Where(s => s.FilenameAndPath.EndsWith(relativeSuffix)).ToList() ?? new List<ScanItemDto>();
+        }
+    }
+
+    /// <summary>
+    /// Looks up a scan item by its primary key.
+    /// </summary>
+    public ScanItemDto? GetItemById(Guid id)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetItemById called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.ScanItems?.FirstOrDefault(s => s.Id == id);
+        }
+    }
+
+    /// <summary>
+    /// Applies the field updates carried by a check-report row to an existing scan item.
+    /// Any non-null argument overwrites the existing value; nulls are left as they are.
+    /// </summary>
+    public void ApplyUpdateById(
+        Guid id,
+        long? newFileSize,
+        DateTime? newFileLastModificationUTC,
+        string? newFileSha512Hash,
+        DateTime scanDateUTC,
+        bool hashWasRecomputed,
+        string? newFilenameAndPath,
+        string? newPathBase)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("ApplyUpdateById called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            var existingItem = _dbContext.ScanItems?.FirstOrDefault(s => s.Id == id);
+            if (existingItem is null)
+            {
+                throw new InvalidOperationException($"No ScanItem with Id {id} found.");
+            }
+            if (newFilenameAndPath is not null)
+            {
+                existingItem.FilenameAndPath = newFilenameAndPath;
+            }
+            if (newPathBase is not null)
+            {
+                existingItem.PathBase = newPathBase;
+            }
+            if (newFileSize.HasValue)
+            {
+                existingItem.FileSize = newFileSize.Value;
+            }
+            if (newFileLastModificationUTC.HasValue)
+            {
+                existingItem.FileLastModificationUTC = newFileLastModificationUTC.Value;
+            }
+            if (newFileSha512Hash is not null)
+            {
+                existingItem.FileSha512Hash = newFileSha512Hash;
+            }
+            existingItem.LastScanDateUTC = scanDateUTC;
+            if (hashWasRecomputed)
+            {
+                existingItem.LastSha512ScanDateUTC = scanDateUTC;
+            }
+            _dbContext.Entry(existingItem).State = EntityState.Modified;
+            _dbContext.SaveChanges();
+            _dbContext.Entry(existingItem).State = EntityState.Detached;
+            TotalSuccessCount++;
+        }
+    }
+
+    /// <summary>
+    /// Removes the scan item with the given primary key. Returns true when a row was removed.
+    /// </summary>
+    public bool RemoveItemById(Guid id)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("RemoveItemById called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            var existingItem = _dbContext.ScanItems?.FirstOrDefault(s => s.Id == id);
+            if (existingItem is null)
+            {
+                return false;
+            }
+            _dbContext.Remove(existingItem);
+            _dbContext.SaveChanges();
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Inserts a brand new scan item, used by applyCheck for NewOnDisk rows.
+    /// </summary>
+    public void InsertItem(ScanItemDto item)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("InsertItem called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            _dbContext.Add(item);
+            _dbContext.SaveChanges();
+            _dbContext.Entry(item).State = EntityState.Detached;
+            TotalSuccessCount++;
         }
     }
 

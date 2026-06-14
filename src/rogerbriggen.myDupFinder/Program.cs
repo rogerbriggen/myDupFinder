@@ -144,12 +144,49 @@ class Program
                         }
                     }
 
+                    //Check Jobs
+                    foreach (MyDupFinderCheckJobDTO checkDto in dto.MyDupFinderCheckJobDTOs)
+                    {
+                        using (var checkService = serviceProvider.GetService<CheckService>())
+                        {
+                            if (checkService is null)
+                            {
+                                logger.LogError("No checkService registered!");
+                                return;
+                            }
+                            logger.LogInformation("Running Job {JobName}...", checkDto.ScanJobDTO.JobName);
+                            ThreadStart ts = delegate { checkService.StartCheck(checkDto); };
+                            var t = new Thread(ts);
+                            t.Name = "CheckService";
+                            t.Start();
+                            //Wait for t or for a key press
+                            WaitForThreadOrKeyPress(logger, checkDto.ScanJobDTO.JobName, checkService, t);
+                        }
+                    }
+
 
                     logger.LogInformation("All Jobs finished");
                 }
                 catch (Exception ex)
                 {
                     logger.LogError(ex, $"Exception during run of the job...! {args[1]}");
+                }
+            }
+            else if (args[0].ToLower(ci) == "applycheck")
+            {
+                try
+                {
+                    var applier = serviceProvider.GetService<CheckReportApplier>();
+                    if (applier is null)
+                    {
+                        logger.LogError("No CheckReportApplier registered!");
+                        return;
+                    }
+                    applier.Apply(args[1]);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, $"Exception during applyCheck...! {args[1]}");
                 }
             }
             else
@@ -207,6 +244,7 @@ class Program
         System.Console.WriteLine("exampleproject [projectfile.xml]");
         System.Console.WriteLine("run [projectfile.xml]");
         System.Console.WriteLine("dryrun [projectfile.xml]");
+        System.Console.WriteLine("applyCheck [reportfile.csv]");
     }
 
     private static void ConfigureServices(IServiceCollection services)
@@ -265,6 +303,8 @@ class Program
         services.AddTransient<ScanService>();
         services.AddTransient<FindDupsService>();
         services.AddTransient<RefreshService>();
+        services.AddTransient<CheckService>();
+        services.AddTransient<CheckReportApplier>();
 
 
         Log.Information("**** Opening log... ****");
