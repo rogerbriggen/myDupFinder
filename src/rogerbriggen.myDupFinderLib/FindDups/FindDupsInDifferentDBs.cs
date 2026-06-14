@@ -170,12 +170,8 @@ internal class FindDupsInDifferentDBs : BasicRunner<FindDupsInDifferentDBs>, IFi
             rows.Add(new DupReportRow(s, DupReportCategory.New, DupReportSource.Second, gen.Next()));
         }
 
-        return rows
-            .OrderBy(r => r.Category)
-            .ThenBy(r => r.GroupId)
-            .ThenBy(r => r.Source)
-            .ThenBy(r => r.Item.FilenameAndPath, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        // DupReportWriter applies the canonical sort.
+        return rows;
     }
 
     private void LogSummary(List<DupReportRow> rows)

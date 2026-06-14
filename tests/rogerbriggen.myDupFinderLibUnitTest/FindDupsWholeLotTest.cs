@@ -190,6 +190,39 @@ public class FindDupsWholeLotTest : IDisposable
         Assert.Equal("/abs/file.txt", DupReportWriter.GetRelativePath(item));
     }
 
+    [Fact]
+    public void GetRelativePath_DoesNotMatchSiblingPrefix()
+    {
+        // PathBase "C:\data" must NOT match a file under sibling "C:\database\...".
+        var item = Item("C:\\database\\file.txt", "H", 1);
+        item.PathBase = "C:\\data";
+        Assert.Equal("C:\\database\\file.txt", DupReportWriter.GetRelativePath(item));
+    }
+
+    [Fact]
+    public void GetRelativePath_DoesNotMatchSiblingPrefix_ForwardSlash()
+    {
+        var item = Item("/data2/file.txt", "H", 1);
+        item.PathBase = "/data";
+        Assert.Equal("/data2/file.txt", DupReportWriter.GetRelativePath(item));
+    }
+
+    [Fact]
+    public void GetRelativePath_AcceptsBoundaryWhenBaseEndsWithSeparator()
+    {
+        var item = Item("C:\\data\\file.txt", "H", 1);
+        item.PathBase = "C:\\data\\";
+        Assert.Equal("file.txt", DupReportWriter.GetRelativePath(item));
+    }
+
+    [Fact]
+    public void GetRelativePath_ReturnsEmpty_WhenFullPathEqualsBase()
+    {
+        var item = Item("/data", "H", 1);
+        item.PathBase = "/data";
+        Assert.Equal(string.Empty, DupReportWriter.GetRelativePath(item));
+    }
+
     // ----- Cross-DB FindDupsTheWholeLot -----
 
     [Fact]
@@ -341,6 +374,43 @@ public class FindDupsWholeLotTest : IDisposable
     }
 
     // ----- Cross-DB FindOnlyDups (regression for new columns) -----
+
+    [Fact]
+    public void FindDupsTheWholeLot_SameDB_AppliesCanonicalSort()
+    {
+        // Mix Duplicate and Unique items in a known scrambled hash/path order;
+        // the writer should reorder by Category enum, then GroupId, then path.
+        PopulateDatabase(_baseDbPath,
+            Item("/r/z_unique.txt", "HASH_U", 50),
+            Item("/r/b_dup.txt", "HASH_DUP", 100),
+            Item("/r/a_dup.txt", "HASH_DUP", 100));
+
+        var dto = new MyDupFinderFindDupsJobDTO
+        {
+            JobName = "sorted",
+            DatabaseFileBase = _baseDbPath,
+            DatabaseFile = string.Empty,
+            ReportPath = _tempDir + Path.DirectorySeparatorChar,
+            FindDupsMode = MyDupFinderFindDupsJobDTO.EFindDupsMode.FindDupsTheWholeLot,
+        };
+
+        var runner = new FindDupsInSameDB(dto, null, new NullServiceProvider());
+        runner.Start(System.Threading.CancellationToken.None);
+        runner.Dispose();
+
+        var lines = File.ReadAllLines(Path.Combine(_tempDir, "sorted dupReport.csv"));
+        var rows = lines.Skip(1).Select(Parse).ToList();
+        Assert.Equal(3, rows.Count);
+
+        // Duplicate (enum value 0) comes before Unique (enum value 2).
+        Assert.Equal("Duplicate", rows[0].Category);
+        Assert.Equal("Duplicate", rows[1].Category);
+        Assert.Equal("Unique", rows[2].Category);
+
+        // Within the same group, paths must be ordered alphabetically (case-insensitive).
+        Assert.Equal("/r/a_dup.txt", rows[0].Path);
+        Assert.Equal("/r/b_dup.txt", rows[1].Path);
+    }
 
     [Fact]
     public void FindOnlyDups_CrossDB_DuplicatesShareGroupIdPerHash()
