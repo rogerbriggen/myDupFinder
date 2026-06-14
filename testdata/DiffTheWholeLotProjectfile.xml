@@ -28,10 +28,10 @@
   -->
   <MyDupFinderFindDupsJobDTOs>
     <MyDupFinderFindDupsJobDTO>
-      <JobName>Demo FindDupsJob</JobName>
+      <JobName>Demo DiffFindDupsTheWholeLot</JobName>
       <DatabaseFileBase>O:\DatenP\Programmieren\repos\myDupFinder\testdata\base.db</DatabaseFileBase>
       <DatabaseFile>O:\DatenP\Programmieren\repos\myDupFinder\testdata\newfiles.db</DatabaseFile>
-      <FindDupsMode>FindOnlyDups</FindDupsMode>
+      <FindDupsMode>FindDupsTheWholeLot</FindDupsMode>
       <ReportPath>O:\DatenP\Programmieren\repos\myDupFinder\testdata\</ReportPath>
     </MyDupFinderFindDupsJobDTO>
   </MyDupFinderFindDupsJobDTOs>
