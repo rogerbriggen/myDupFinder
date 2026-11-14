@@ -5,8 +5,10 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Microsoft.Data.Sqlite;
 using RogerBriggen.MyDupFinderData;
+using RogerBriggen.MyDupFinderDB;
 using RogerBriggen.MyDupFinderLib;
 using Xunit;
 using Xunit.Abstractions;
@@ -87,5 +89,13 @@ public class ScanBenchmark : IDisposable
         _output.WriteLine("Scan: " + runner.Throughput.BuildSummary());
         Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
         Assert.Equal(tree.Files.Count, runner.Throughput.Files);
+
+        // Failed files still count as handled files, so verify the scan really was complete
+        using (var context = DubFinderContextFactory.CreateDubFinderContext(job.DatabaseFile))
+        {
+            Assert.Equal(0, context.ScanErrorItems!.Count());
+            Assert.Equal(tree.Files.Count, context.ScanItems!.Count());
+        }
+        Assert.Equal(tree.TotalBytes, runner.Throughput.BytesHashed);
     }
 }

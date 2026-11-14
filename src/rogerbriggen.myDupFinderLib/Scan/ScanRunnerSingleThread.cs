@@ -183,20 +183,17 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
         Exception? hashError = null;
         try
         {
-            using (var sha512 = SHA512.Create())
+            // The hash stage covers opening, reading, hashing and closing the file
+            long hashStart = Throughput.StartStage();
+            try
             {
-                using (var stream = File.OpenRead(item.FilenameAndPath))
-                {
-                    long hashStart = Throughput.StartStage();
-                    try
-                    {
-                        item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
-                    }
-                    finally
-                    {
-                        Throughput.EndStage(ThroughputStage.Hash, hashStart);
-                    }
-                }
+                using var sha512 = SHA512.Create();
+                using var stream = File.OpenRead(item.FilenameAndPath);
+                item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
+            }
+            finally
+            {
+                Throughput.EndStage(ThroughputStage.Hash, hashStart);
             }
         }
 #pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen

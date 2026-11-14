@@ -15,7 +15,7 @@ public enum ThroughputStage
     /// <summary>Walking the file system and reading file attributes.</summary>
     Enumerate = 0,
 
-    /// <summary>Reading files and calculating the SHA-512 hash.</summary>
+    /// <summary>Opening, reading, hashing and closing the files (SHA-512).</summary>
     Hash = 1,
 
     /// <summary>Everything the runner does with the database: resume lookups, inserts, updates, removals and commits.</summary>
