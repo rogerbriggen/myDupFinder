@@ -177,22 +177,41 @@ public class ScanJobDBInserts : IDisposable
 
     /// <summary>
     /// Adds a scan item to the pending operations. It reaches the database with the next flush.
-    /// The object is kept by reference (EF assigns the Id to it when it is inserted), so it must not be changed after it was queued.
+    /// The object is kept by reference, so it must not be changed after it was queued.
+    /// If its Id is empty, a new Id is assigned now (when it is queued), so the key is known from this moment and the
+    /// row can be touched, updated or removed with this object before the flush.
     /// Throws <see cref="BatchWriteException"/> if this call triggered a flush that failed.
     /// </summary>
     public void Enqueue(ScanItemDto si)
     {
+        ArgumentNullException.ThrowIfNull(si);
+        if (si.Id == Guid.Empty)
+        {
+            si.Id = Guid.NewGuid();
+        }
         AddPending(new PendingOperation(PendingKind.InsertItem, Item: si), nameof(Enqueue));
     }
 
     /// <summary>
     /// Adds a scan error item to the pending operations. It reaches the database with the next flush.
     /// The object is kept by reference (EF assigns the Id to it when it is inserted), so it must not be changed after it was queued.
+    /// Error items are only ever inserted and never addressed by key afterwards, so their Id is left to EF.
     /// Throws <see cref="BatchWriteException"/> if this call triggered a flush that failed.
     /// </summary>
     public void Enqueue(ScanErrorItemDto sei)
     {
         AddPending(new PendingOperation(PendingKind.InsertError, ErrorItem: sei), nameof(Enqueue));
+    }
+
+    /// <summary>
+    /// A row without a key can never be addressed, so touch, update and remove fail at the call, not at the flush.
+    /// </summary>
+    private static void ThrowIfNoKey(ScanItemDto item, string paramName)
+    {
+        if (item.Id == Guid.Empty)
+        {
+            throw new ArgumentException("The scan item has no Id (it was never stored or queued with Enqueue), so the row cannot be addressed.", paramName);
+        }
     }
 
     private void AddPending(PendingOperation operation, string callerName)
@@ -263,7 +282,11 @@ public class ScanJobDBInserts : IDisposable
                             }
                             break;
                         case PendingKind.Remove:
-                            ApplyRemove(op.Id, trackedById, removedIds);
+                            if (ApplyRemove(op.Id, trackedById, removedIds))
+                            {
+                                // The row was inserted earlier in this batch and is dropped again: nothing was written
+                                successCount--;
+                            }
                             break;
                         default:
                             throw new InvalidOperationException($"Unknown pending operation {op.Kind}");
@@ -324,6 +347,10 @@ public class ScanJobDBInserts : IDisposable
         }
         if (!trackedById.TryGetValue(op.Id, out var target))
         {
+            if (op.Id == Guid.Empty)
+            {
+                throw new InvalidOperationException("A pending touch or update has no key. It must not be applied, EF would insert a blank row.");
+            }
             target = new ScanItemDto { Id = op.Id };
             _dbContext!.Attach(target);
             trackedById[op.Id] = target;
@@ -358,21 +385,28 @@ public class ScanJobDBInserts : IDisposable
     /// <summary>
     /// Applies a remove by primary key. Works on whatever entity is tracked for the key, otherwise on a stub entity
     /// that carries only the Id; operations on the key that come later in the same batch are ignored.
+    /// Returns true if the row was inserted earlier in this batch (so nothing is written at all).
     /// Must be called with the lock held.
     /// </summary>
-    private void ApplyRemove(Guid id, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    private bool ApplyRemove(Guid id, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
     {
         if (!removedIds.Add(id))
         {
-            return;
+            return false;
         }
         if (!trackedById.TryGetValue(id, out var target))
         {
+            if (id == Guid.Empty)
+            {
+                throw new InvalidOperationException("A pending remove has no key. It must not be applied, EF would treat the stub as a new row.");
+            }
             target = new ScanItemDto { Id = id };
             _dbContext!.Attach(target);
         }
         // Removing an entity that is Added drops it again: nothing is inserted
-        _dbContext!.Remove(target);
+        bool insertedInThisBatch = _dbContext!.Entry(target).State == EntityState.Added;
+        _dbContext.Remove(target);
+        return insertedInThisBatch;
     }
 
     public bool IsEmptyScanItemTable()
@@ -506,6 +540,7 @@ public class ScanJobDBInserts : IDisposable
     public void UpdateItem(ScanItemDto existingItem, long newFileSize, DateTime newFileLastModificationUTC, string newFileSha512Hash, DateTime scanDateUTC)
     {
         ArgumentNullException.ThrowIfNull(existingItem);
+        ThrowIfNoKey(existingItem, nameof(existingItem));
         if (_dbContext is null)
         {
             throw new InvalidOperationException("UpdateItem called without SetupDB!");
@@ -531,6 +566,7 @@ public class ScanJobDBInserts : IDisposable
     public void TouchItem(ScanItemDto existingItem, DateTime scanDateUTC)
     {
         ArgumentNullException.ThrowIfNull(existingItem);
+        ThrowIfNoKey(existingItem, nameof(existingItem));
         if (_dbContext is null)
         {
             throw new InvalidOperationException("TouchItem called without SetupDB!");
@@ -550,6 +586,7 @@ public class ScanJobDBInserts : IDisposable
     public void RemoveItem(ScanItemDto item)
     {
         ArgumentNullException.ThrowIfNull(item);
+        ThrowIfNoKey(item, nameof(item));
         if (_dbContext is null)
         {
             throw new InvalidOperationException("RemoveItem called without SetupDB!");

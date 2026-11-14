@@ -813,4 +813,99 @@ public class ScanJobDBInsertsBatchTest : IDisposable
         Assert.Contains(remaining, i => i.Id == b.Id);
         Assert.Equal(0, db.TrackedEntityCount);
     }
+
+    // ---- Items without an Id (the way the runners create them) ----
+
+    private static ScanItemDto CreateItemWithoutId(string name, string hash = "HASH", long size = 100)
+    {
+        var item = CreateItem(name, hash, size);
+        item.Id = Guid.Empty;
+        return item;
+    }
+
+    [Fact]
+    public void NoId_Enqueue_AssignsAnIdImmediately_AndTheRowIsStoredUnderIt()
+    {
+        using var db = CreateDb();
+        var item = CreateItemWithoutId("a");
+
+        db.Enqueue(item);
+
+        Assert.NotEqual(Guid.Empty, item.Id);
+        var assigned = item.Id;
+        db.WriteChanges();
+        Assert.Equal(assigned, item.Id);
+        Assert.Equal(BasePath + "a", ReadRow(assigned).FilenameAndPath);
+        Assert.Equal(1, CommittedItemCount());
+    }
+
+    [Fact]
+    public void NoId_EnqueueThenTouchAndUpdate_StoresOneRowWithTheFinalValues()
+    {
+        using var db = CreateDb();
+        var touched = CreateItemWithoutId("touched", "HASH_T", 10);
+        var updated = CreateItemWithoutId("updated", "HASH_U", 20);
+        db.Enqueue(touched);
+        db.Enqueue(updated);
+
+        db.TouchItem(touched, Date1);
+        db.UpdateItem(updated, 222, Modification, "NEW_HASH", Date2);
+        db.WriteChanges();
+
+        Assert.Equal(2, CommittedItemCount());
+        var rowTouched = ReadRow(touched.Id);
+        Assert.Equal(Date1, rowTouched.LastScanDateUTC);
+        Assert.Equal("HASH_T", rowTouched.FileSha512Hash);
+        Assert.Equal(BasePath + "touched", rowTouched.FilenameAndPath);
+        var rowUpdated = ReadRow(updated.Id);
+        Assert.Equal(222, rowUpdated.FileSize);
+        Assert.Equal("NEW_HASH", rowUpdated.FileSha512Hash);
+        Assert.Equal(Date2, rowUpdated.LastScanDateUTC);
+        Assert.Equal(BasePath + "updated", rowUpdated.FilenameAndPath);
+    }
+
+    [Fact]
+    public void NoId_EnqueueThenRemove_StoresNothing_AndCountsNothing()
+    {
+        using var db = CreateDb();
+        var item = CreateItemWithoutId("a");
+        db.Enqueue(item);
+
+        db.RemoveItem(item);
+        db.WriteChanges();
+
+        Assert.Equal(0, CommittedItemCount());
+        Assert.Equal(0, db.TotalSuccessCount);
+        Assert.Equal(0, db.PendingCount);
+    }
+
+    [Fact]
+    public void InsertThenRemoveOfTheSameKey_InsertsNothing_AndDoesNotCount()
+    {
+        using var db = CreateDb();
+        var item = CreateItem("a");
+        db.Enqueue(item);
+        db.Enqueue(CreateItem("b"));
+
+        db.RemoveItem(item);
+        db.WriteChanges();
+
+        Assert.Equal(1, CommittedItemCount());
+        Assert.Equal(1, db.TotalSuccessCount);
+    }
+
+    [Fact]
+    public void EmptyId_TouchUpdateRemove_ThrowArgumentException_AndQueueNothing()
+    {
+        using var db = CreateDb();
+        var item = CreateItemWithoutId("a");
+
+        Assert.Throws<ArgumentException>(() => db.TouchItem(item, Date1));
+        Assert.Throws<ArgumentException>(() => db.UpdateItem(item, 1, Modification, "H", Date1));
+        Assert.Throws<ArgumentException>(() => db.RemoveItem(item));
+
+        Assert.Equal(0, db.PendingCount);
+        db.WriteChanges();
+        Assert.Equal(0, CommittedItemCount());
+    }
 }
