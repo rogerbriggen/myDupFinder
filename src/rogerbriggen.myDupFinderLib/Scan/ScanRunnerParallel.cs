@@ -53,6 +53,8 @@ internal class ScanRunnerParallel : BasicRunner<ScanRunnerParallel>, IScanRunner
         {
             Task taskHash = Task.Run(() =>
                                           {
+                                              // Set (from several threads) when the loop was stopped because the database could not be written
+                                              int writeFailed = 0;
                                               ParallelOptions po = new ParallelOptions();
                                               po.CancellationToken = CancelToken;
                                               var loopResult = Parallel.ForEach<ScanItemDto>(_scanItemCollection.GetConsumingEnumerable(), po, (item, loopState, _) =>
@@ -70,6 +72,13 @@ internal class ScanRunnerParallel : BasicRunner<ScanRunnerParallel>, IScanRunner
                                                       }
                                                   }
 #pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen
+                                                      catch (BatchWriteException ex)
+                                                      {
+                                                          // Fatal: stop hashing, the database cannot be written
+                                                          _logger.LogError(ex, "Database write failure, stopping the scan. {PendingCount} operations could not be written.", ex.PendingOperationCount);
+                                                          Interlocked.Exchange(ref writeFailed, 1);
+                                                          loopState.Stop();
+                                                      }
                                                       catch (Exception e)
 #pragma warning restore CA1031 // Keine allgemeinen Ausnahmetypen abfangen
                                                       {
@@ -78,6 +87,21 @@ internal class ScanRunnerParallel : BasicRunner<ScanRunnerParallel>, IScanRunner
                                                   }
 
                                               });
+                                              try
+                                              {
+                                                  ScanJobDBInserts.WriteChanges();
+                                              }
+                                              catch (BatchWriteException ex)
+                                              {
+                                                  _logger.LogError(ex, "Database write failure at the end of the scan. {PendingCount} operations could not be written.", ex.PendingOperationCount);
+                                                  return;
+                                              }
+                                              if (Volatile.Read(ref writeFailed) != 0)
+                                              {
+                                                  // The final write worked, but queued files were never processed: the scan is not complete
+                                                  _logger.LogError("The scan is incomplete: it was stopped because of a database write failure and not all queued files were processed. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalSuccessCount, ScanJobDBInserts.TotalErrorCount, _scanItemCollection.Count);
+                                                  return;
+                                              }
                                               _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalSuccessCount, ScanJobDBInserts.TotalErrorCount, _scanItemCollection.Count);
                                               RunnerState = IService.EServiceState.finished;
                                           });

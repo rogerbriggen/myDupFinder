@@ -20,10 +20,29 @@ public class ScanJobDBInserts : IDisposable
 
     private DubFinderContext? _dbContext;
     private DbContextOptions<DubFinderContext>? _dbContextOptions;
-    private Queue<ScanItemDto> _finishedScanItemCollection = new Queue<ScanItemDto>();
-    private Queue<ScanErrorItemDto> _errorScanItemCollection = new Queue<ScanErrorItemDto>();
-    private const int _commitCount = 100; //Save changes every 100 item
-    private const bool _recreateContext = true; //Its faster to create a dbIndex after a wile
+    /// <summary>Default number of pending operations that triggers a flush.</summary>
+    public const int DefaultBatchSize = 500;
+
+    /// <summary>Default time after which the next added operation triggers a flush.</summary>
+    public static readonly TimeSpan DefaultFlushInterval = TimeSpan.FromSeconds(5);
+
+    private enum PendingKind
+    {
+        InsertItem,
+        InsertError,
+        Touch,
+        Update,
+        Remove,
+    }
+
+    private readonly record struct PendingOperation(PendingKind Kind, ScanItemDto? Item, ScanErrorItemDto? ErrorItem);
+
+    // All operations that are not yet committed, in the order they were added
+    private readonly List<PendingOperation> _pending = new List<PendingOperation>();
+    private readonly int _batchSize;
+    private readonly TimeSpan _flushInterval;
+    private readonly TimeProvider _timeProvider;
+    private long _lastFlushTimestamp;
     private readonly object dbContextLock = new object();
     private readonly ILogger<ScanJobDBInserts> _logger;
     private bool _disposedValue;
@@ -31,7 +50,51 @@ public class ScanJobDBInserts : IDisposable
     public int TotalErrorCount { get; private set; }
 
 
-    public ScanJobDBInserts(ILogger<ScanJobDBInserts>? logger) => _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanJobDBInserts>();
+    /// <summary>
+    /// Creates the object. Writes are collected and committed in one transaction per batch.
+    /// </summary>
+    /// <param name="logger">Optional logger.</param>
+    /// <param name="batchSize">Number of pending operations that triggers a flush (default 500).</param>
+    /// <param name="flushInterval">Time since the last flush after which the next added operation triggers a flush (default 5 seconds). There is no timer: this is only checked when an operation is added.</param>
+    /// <param name="timeProvider">Clock, for tests. Default is <see cref="TimeProvider.System"/>.</param>
+    public ScanJobDBInserts(ILogger<ScanJobDBInserts>? logger, int batchSize = DefaultBatchSize, TimeSpan? flushInterval = null, TimeProvider? timeProvider = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanJobDBInserts>();
+        _batchSize = batchSize;
+        _flushInterval = flushInterval ?? DefaultFlushInterval;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _lastFlushTimestamp = _timeProvider.GetTimestamp();
+    }
+
+    /// <summary>
+    /// Gets the number of operations that were added but are not yet committed to the database.
+    /// </summary>
+    public int PendingCount
+    {
+        get
+        {
+            lock (dbContextLock)
+            {
+                return _pending.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the number of entities the change tracker currently holds (for tests and diagnostics).
+    /// </summary>
+    internal int TrackedEntityCount
+    {
+        get
+        {
+            lock (dbContextLock)
+            {
+                return _dbContext?.ChangeTracker.Entries().Count() ?? 0;
+            }
+        }
+    }
+
     public void SetupDB(string databaseFile)
     {
         lock (dbContextLock)
@@ -43,6 +106,7 @@ public class ScanJobDBInserts : IDisposable
             _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
             TotalSuccessCount = 0;
             TotalErrorCount = 0;
+            _lastFlushTimestamp = _timeProvider.GetTimestamp();
         }
 
     }
@@ -98,63 +162,208 @@ public class ScanJobDBInserts : IDisposable
         return command.ExecuteScalar();
     }
 
+    /// <summary>
+    /// Adds a scan item to the pending operations. It reaches the database with the next flush.
+    /// Throws <see cref="BatchWriteException"/> if this call triggered a flush that failed.
+    /// </summary>
     public void Enqueue(ScanItemDto si)
     {
-        if ((_dbContext is null) || (_dbContextOptions is null))
-        {
-            throw new InvalidOperationException("Enqueue called without SetupDB!");
-        }
-        lock (dbContextLock)
-        {
-            _finishedScanItemCollection.Enqueue(si);
-            WriteChangesInternal();
-        }
+        AddPending(new PendingOperation(PendingKind.InsertItem, si, null), nameof(Enqueue));
     }
 
+    /// <summary>
+    /// Adds a scan error item to the pending operations. It reaches the database with the next flush.
+    /// Throws <see cref="BatchWriteException"/> if this call triggered a flush that failed.
+    /// </summary>
     public void Enqueue(ScanErrorItemDto sei)
     {
+        AddPending(new PendingOperation(PendingKind.InsertError, null, sei), nameof(Enqueue));
+    }
+
+    private void AddPending(PendingOperation operation, string callerName)
+    {
         if ((_dbContext is null) || (_dbContextOptions is null))
         {
-            throw new InvalidOperationException("Enqueue called without SetupDB!");
+            throw new InvalidOperationException($"{callerName} called without SetupDB!");
         }
         lock (dbContextLock)
         {
-            _errorScanItemCollection.Enqueue(sei);
-            WriteChangesInternal();
+            _pending.Add(operation);
+            if ((_pending.Count >= _batchSize) || (_timeProvider.GetElapsedTime(_lastFlushTimestamp) >= _flushInterval))
+            {
+                FlushInternal();
+            }
         }
     }
 
-    private void WriteChangesInternal()
+    /// <summary>
+    /// Writes all pending operations in one transaction. Must be called with the lock held.
+    /// On success the pending operations are cleared, the counters advance and the change tracker is emptied.
+    /// On failure everything is rolled back, the operations stay pending, the counters do not change and a
+    /// <see cref="BatchWriteException"/> is thrown.
+    /// </summary>
+    private void FlushInternal()
     {
-        if ((_dbContext is null) || (_dbContextOptions is null))
+        if (_dbContext is null)
         {
             throw new InvalidOperationException("Enqueue or WriteChanges called without SetupDB!");
         }
-        lock (dbContextLock)
+        if (_pending.Count == 0)
         {
-            foreach (ScanItemDto siInList in _finishedScanItemCollection)
+            _lastFlushTimestamp = _timeProvider.GetTimestamp();
+            return;
+        }
+
+        int successCount = 0;
+        int errorCount = 0;
+        // The entity instance that is tracked for a primary key in this batch, and the keys removed in this batch.
+        // Needed because the same row can be touched, updated and removed several times (also through different objects).
+        var trackedById = new Dictionary<Guid, ScanItemDto>();
+        var removedIds = new HashSet<Guid>();
+        try
+        {
+            using var transaction = _dbContext.Database.BeginTransaction();
+            try
             {
-                _dbContext.Add(siInList);
+                foreach (PendingOperation op in _pending)
+                {
+                    switch (op.Kind)
+                    {
+                        case PendingKind.InsertItem:
+                            _dbContext.Add(op.Item!);
+                            trackedById[op.Item!.Id] = op.Item!;
+                            successCount++;
+                            break;
+                        case PendingKind.InsertError:
+                            _dbContext.Add(op.ErrorItem!);
+                            errorCount++;
+                            break;
+                        case PendingKind.Touch:
+                            ApplyModification(op.Item!, false, trackedById, removedIds);
+                            break;
+                        case PendingKind.Update:
+                            if (ApplyModification(op.Item!, true, trackedById, removedIds))
+                            {
+                                successCount++;
+                            }
+                            break;
+                        case PendingKind.Remove:
+                            ApplyRemove(op.Item!, trackedById, removedIds);
+                            break;
+                        default:
+                            throw new InvalidOperationException($"Unknown pending operation {op.Kind}");
+                    }
+                }
+                _dbContext.SaveChanges();
+                transaction.Commit();
             }
-            foreach (ScanErrorItemDto seiInList in _errorScanItemCollection)
+            catch
             {
-                _dbContext.Add(seiInList);
+                try
+                {
+                    transaction.Rollback();
+                }
+#pragma warning disable CA1031 // The original exception is more important than a failing rollback (disposing the transaction rolls back anyway)
+                catch (Exception rollbackException)
+#pragma warning restore CA1031
+                {
+                    _logger.LogWarning(rollbackException, "Rollback of the failed batch also failed.");
+                }
+                throw;
             }
-            int written = _dbContext.SaveChanges();
-            if (written == _finishedScanItemCollection.Count + _errorScanItemCollection.Count)
+        }
+#pragma warning disable CA1031 // Every failure of the batch has the same consequence
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            // Forget what was attached, so a later retry does not add the same entities twice
+            _dbContext.ChangeTracker.Clear();
+            int pendingCount = _pending.Count;
+            _logger.LogError(ex, "Writing a batch of {PendingCount} operations to the database failed. The batch was rolled back, the operations stay pending.", pendingCount);
+            throw new BatchWriteException($"Writing a batch of {pendingCount} operations to the database failed: {ex.Message}", pendingCount, ex);
+        }
+
+        // Only now, after the commit, the batch counts as written
+        _pending.Clear();
+        TotalSuccessCount += successCount;
+        TotalErrorCount += errorCount;
+        _dbContext.ChangeTracker.Clear();
+        _lastFlushTimestamp = _timeProvider.GetTimestamp();
+    }
+
+    /// <summary>
+    /// Applies a touch (only LastScanDateUTC) or an update (the five update columns) to the change tracker.
+    /// An entity is attached only if its key is not tracked yet; otherwise only the modified flags are added to the
+    /// tracked entry (an entity that is Added stays Added). If a different object with the same key is already
+    /// tracked, the written values of the given object are copied onto the tracked one, so the later operation wins
+    /// for the columns it writes and the columns only written earlier are kept.
+    /// Must be called with the lock held. Returns false if the operation was ignored because the row is removed in this batch.
+    /// </summary>
+    private bool ApplyModification(ScanItemDto item, bool fullUpdate, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    {
+        if (removedIds.Contains(item.Id))
+        {
+            return false;
+        }
+        ScanItemDto target;
+        if (trackedById.TryGetValue(item.Id, out var tracked))
+        {
+            target = tracked;
+            if (!ReferenceEquals(tracked, item))
             {
-                TotalSuccessCount += _finishedScanItemCollection.Count;
-                TotalErrorCount += _errorScanItemCollection.Count;
-                //all ok... we delete all items
-                _finishedScanItemCollection = new Queue<ScanItemDto>();
-                _errorScanItemCollection = new Queue<ScanErrorItemDto>();
+                tracked.LastScanDateUTC = item.LastScanDateUTC;
+                if (fullUpdate)
+                {
+                    tracked.FileSize = item.FileSize;
+                    tracked.FileLastModificationUTC = item.FileLastModificationUTC;
+                    tracked.FileSha512Hash = item.FileSha512Hash;
+                    tracked.LastSha512ScanDateUTC = item.LastSha512ScanDateUTC;
+                }
             }
-            if (_recreateContext && (written % _commitCount == 0))
-            {
-                _dbContext.Dispose();
-                _dbContext = new DubFinderContext(_dbContextOptions);
-                _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
-            }
+        }
+        else
+        {
+            target = item;
+            _dbContext!.Attach(item);
+            trackedById[item.Id] = item;
+        }
+
+        var entry = _dbContext!.Entry(target);
+        if (entry.State == EntityState.Added)
+        {
+            // The row is inserted with the current values of the object, nothing to flag
+            return true;
+        }
+        entry.Property(i => i.LastScanDateUTC).IsModified = true;
+        if (fullUpdate)
+        {
+            entry.Property(i => i.FileSize).IsModified = true;
+            entry.Property(i => i.FileLastModificationUTC).IsModified = true;
+            entry.Property(i => i.FileSha512Hash).IsModified = true;
+            entry.Property(i => i.LastSha512ScanDateUTC).IsModified = true;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Applies a remove to the change tracker. Works on whatever instance is tracked for the key; operations
+    /// on the key that come later in the same batch are ignored. Must be called with the lock held.
+    /// </summary>
+    private void ApplyRemove(ScanItemDto item, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    {
+        if (!removedIds.Add(item.Id))
+        {
+            return;
+        }
+        if (trackedById.TryGetValue(item.Id, out var tracked))
+        {
+            // Removing an entity that is Added drops it again: nothing is inserted
+            _dbContext!.Remove(tracked);
+        }
+        else
+        {
+            _dbContext!.Attach(item);
+            _dbContext.Remove(item);
         }
     }
 
@@ -255,7 +464,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            return _dbContext.ScanItems?.Where(s => s.PathBase == basePath).ToList() ?? new List<ScanItemDto>();
+            return _dbContext.ScanItems?.AsNoTracking().Where(s => s.PathBase == basePath).ToList() ?? new List<ScanItemDto>();
         }
     }
 
@@ -272,72 +481,74 @@ public class ScanJobDBInserts : IDisposable
         lock (dbContextLock)
         {
             return _dbContext.ScanItems?
+                .AsNoTracking()
                 .Where(s => s.OriginComputer == originComputer && s.ScanName == scanName)
                 .ToList() ?? new List<ScanItemDto>();
         }
     }
 
     /// <summary>
-    /// Updates an existing scan item in the database.
+    /// Updates an existing scan item in the database (queued, written with the next flush).
     /// Used by refresh when file size or modification date has changed and the hash needs recalculation.
+    /// Only FileSize, FileLastModificationUTC, FileSha512Hash, LastScanDateUTC and LastSha512ScanDateUTC are written.
+    /// The given object is changed immediately.
+    /// Several operations on the same row in one batch are applied in the order they were added (the later value wins per column).
+    /// If the row is removed earlier in the same batch (<see cref="RemoveItem"/>), this operation is ignored and does not count as success.
     /// </summary>
     public void UpdateItem(ScanItemDto existingItem, long newFileSize, DateTime newFileLastModificationUTC, string newFileSha512Hash, DateTime scanDateUTC)
     {
+        ArgumentNullException.ThrowIfNull(existingItem);
         if (_dbContext is null)
         {
             throw new InvalidOperationException("UpdateItem called without SetupDB!");
         }
         lock (dbContextLock)
         {
-            _dbContext.Attach(existingItem);
             existingItem.FileSize = newFileSize;
             existingItem.FileLastModificationUTC = newFileLastModificationUTC;
             existingItem.FileSha512Hash = newFileSha512Hash;
             existingItem.LastScanDateUTC = scanDateUTC;
             existingItem.LastSha512ScanDateUTC = scanDateUTC;
-            _dbContext.Entry(existingItem).State = EntityState.Modified;
-            _dbContext.SaveChanges();
-            _dbContext.Entry(existingItem).State = EntityState.Detached;
-            TotalSuccessCount++;
+            AddPending(new PendingOperation(PendingKind.Update, existingItem, null), nameof(UpdateItem));
         }
     }
 
     /// <summary>
-    /// Updates the LastScanDateUTC of an existing scan item without recalculating the hash.
-    /// Used by refresh when file size and date are unchanged (the file has not changed).
+    /// Updates the LastScanDateUTC of an existing scan item without recalculating the hash (queued, written with the next flush).
+    /// Used by refresh when file size and date are unchanged (the file has not changed). Only LastScanDateUTC is written.
+    /// The given object is changed immediately.
+    /// Several operations on the same row in one batch are applied in the order they were added.
+    /// If the row is removed earlier in the same batch (<see cref="RemoveItem"/>), this operation is ignored.
     /// </summary>
     public void TouchItem(ScanItemDto existingItem, DateTime scanDateUTC)
     {
+        ArgumentNullException.ThrowIfNull(existingItem);
         if (_dbContext is null)
         {
             throw new InvalidOperationException("TouchItem called without SetupDB!");
         }
         lock (dbContextLock)
         {
-            _dbContext.Attach(existingItem);
             existingItem.LastScanDateUTC = scanDateUTC;
-            _dbContext.Entry(existingItem).State = EntityState.Modified;
-            _dbContext.SaveChanges();
-            _dbContext.Entry(existingItem).State = EntityState.Detached;
+            AddPending(new PendingOperation(PendingKind.Touch, existingItem, null), nameof(TouchItem));
         }
     }
 
     /// <summary>
-    /// Removes a scan item from the database.
+    /// Removes a scan item from the database (queued, written with the next flush).
     /// Used by refresh when a file no longer exists on disk.
+    /// A removed row stays removed: touches and updates of the same row that are added later in the same batch are ignored.
     /// </summary>
     public void RemoveItem(ScanItemDto item)
     {
+        ArgumentNullException.ThrowIfNull(item);
         if (_dbContext is null)
         {
             throw new InvalidOperationException("RemoveItem called without SetupDB!");
         }
         lock (dbContextLock)
         {
-            _dbContext.Attach(item);
-            _dbContext.Remove(item);
-            _dbContext.SaveChanges();
-            _dbContext.Entry(item).State = EntityState.Detached;
+            AddPending(new PendingOperation(PendingKind.Remove, item, null), nameof(RemoveItem));
         }
     }
 
@@ -486,6 +697,10 @@ public class ScanJobDBInserts : IDisposable
     }
 
 
+    /// <summary>
+    /// Writes all pending operations now, in one transaction.
+    /// Throws <see cref="BatchWriteException"/> if that fails; the operations then stay pending.
+    /// </summary>
     public void WriteChanges()
     {
         if (_dbContext is null)
@@ -494,7 +709,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            WriteChangesInternal();
+            FlushInternal();
         }
     }
 
@@ -504,12 +719,25 @@ public class ScanJobDBInserts : IDisposable
         {
             if (disposing)
             {
-                // TODO: Verwalteten Zustand (verwaltete Objekte) bereinigen
                 if (_dbContext is not null)
                 {
                     lock (dbContextLock)
                     {
-                        _dbContext.SaveChanges();
+                        if (_pending.Count > 0)
+                        {
+                            // Last resort. A runner should have called WriteChanges before.
+                            _logger.LogWarning("ScanJobDBInserts is disposed with {PendingCount} pending operations. Trying to write them now (a runner forgot to call WriteChanges).", _pending.Count);
+                            try
+                            {
+                                FlushInternal();
+                            }
+#pragma warning disable CA1031 // Dispose must not throw
+                            catch (Exception ex)
+#pragma warning restore CA1031
+                            {
+                                _logger.LogError(ex, "The last resort write of {PendingCount} pending operations in Dispose failed. These operations are lost.", _pending.Count);
+                            }
+                        }
                         _dbContext.Dispose();
                     }
                 }

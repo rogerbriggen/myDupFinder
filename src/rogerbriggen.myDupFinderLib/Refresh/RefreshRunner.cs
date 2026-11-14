@@ -22,10 +22,15 @@ namespace RogerBriggen.MyDupFinderLib;
 /// </summary>
 internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 {
-    public RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider) : base(logger, serviceProvider)
+    public RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider) : this(refreshJobDTO, logger, serviceProvider, null)
+    {
+    }
+
+    /// <param name="dbInserts">Only for tests: a ready made object (for example with a small batch size). The runner disposes it.</param>
+    internal RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts) : base(logger, serviceProvider)
     {
         RefreshJobDTO = refreshJobDTO;
-        ScanJobDBInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
+        ScanJobDBInserts = dbInserts ?? new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
 
@@ -108,6 +113,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 //CancelToken?
                 if (CancelToken.IsCancellationRequested)
                 {
+                    WriteChanges();
                     _logger.LogInformation("Refresh was cancelled by user... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
                     Throughput.LogSummary("Refresh cancelled");
                     RunnerState = IService.EServiceState.cancelled;
@@ -183,7 +189,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                     }
                 }
 #pragma warning disable CA1031 // Do not catch general exception types
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not BatchWriteException)
 #pragma warning restore CA1031 // Do not catch general exception types
                 {
                     _logger.LogError(ex, "Refresh: Error processing file {file}", currentFile);
@@ -202,6 +208,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
             {
                 if (CancelToken.IsCancellationRequested)
                 {
+                    WriteChanges();
                     _logger.LogInformation("Refresh was cancelled by user during removal phase... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
                     Throughput.LogSummary("Refresh cancelled");
                     RunnerState = IService.EServiceState.cancelled;
@@ -222,7 +229,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                         }
                     }
 #pragma warning disable CA1031 // Do not catch general exception types
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is not BatchWriteException)
 #pragma warning restore CA1031 // Do not catch general exception types
                     {
                         _logger.LogError(ex, "Refresh: Error removing file {file} from database", kvp.Key);
@@ -231,18 +238,34 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 }
             }
 
-            long writeStart = Throughput.StartStage();
-            ScanJobDBInserts.WriteChanges();
-            Throughput.EndStage(ThroughputStage.Database, writeStart);
+            WriteChanges();
             RunnerState = IService.EServiceState.finished;
             _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
             Throughput.LogSummary("Refresh finished");
+        }
+        catch (BatchWriteException ex)
+        {
+            // Fatal: the database cannot be written. RunnerState is left as it is (running).
+            _logger.LogError(ex, "Refresh stopped because of a database write failure. {PendingCount} operations could not be written. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} (counted when queued, not all of them are in the database).", ex.PendingOperationCount, AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (Exception ex)
 #pragma warning restore CA1031 // Do not catch general exception types
         {
             _logger.LogError(ex, "Error in Refresh!");
+        }
+    }
+
+    private void WriteChanges()
+    {
+        long start = Throughput.StartStage();
+        try
+        {
+            ScanJobDBInserts.WriteChanges();
+        }
+        finally
+        {
+            Throughput.EndStage(ThroughputStage.Database, start);
         }
     }
 
