@@ -40,10 +40,10 @@ public class DatabaseDiagnosticsTest : IDisposable
 
         Assert.False(string.IsNullOrWhiteSpace(diagnostics.JournalMode));
         Assert.InRange(diagnostics.Synchronous, 0, 3);
-        // Only the indexes the migration creates. FilenameAndPath is missing there (known, added in a later step), so it is not asserted.
         Assert.Contains("IX_ScanItems_FileSha512Hash", diagnostics.ScanItemsIndexes);
         Assert.Contains("IX_ScanItems_FileSize", diagnostics.ScanItemsIndexes);
         Assert.Contains("IX_ScanItems_Filename", diagnostics.ScanItemsIndexes);
+        Assert.Contains("IX_ScanItems_FilenameAndPath", diagnostics.ScanItemsIndexes);
     }
 
     [Fact]
