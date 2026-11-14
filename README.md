@@ -6,6 +6,58 @@ Find duplicates of files (or checks if the backup still is ok...)
 
 Build with latest dotnet relased:   ![.NET 11](https://github.com/rogerbriggen/myDupFinder/workflows/.NET%2011/badge.svg)
 
+## Development container
+
+Start Docker Desktop with Linux containers, open this repository in VS Code with
+the Dev Containers extension, then choose **Dev Containers: Reopen in Container**.
+The setup follows the [Rust UI devcontainer](https://github.com/rogerbriggen/myDupFinderUiRusty/tree/main/.devcontainer),
+adapted for .NET 11 on Ubuntu 24.04.
+
+It includes the .NET 11 SDK, C# Dev Kit, Node.js LTS, GitHub CLI, Claude Code,
+Codex CLI, the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc),
+Python 3 (with pip and venv), ripgrep, jq, and SQLite CLI. Creation restores NuGet
+dependencies and the repository's local .NET tools. If setup is interrupted,
+rerun `bash .devcontainer/post-create.sh` inside the container.
+
+Build and test from the container terminal:
+
+```bash
+dotnet build --configuration Release
+dotnet test --configuration Release --verbosity normal
+dotnet run --project src/rogerbriggen.myDupFinder -- exampleproject projectfile.xml
+```
+
+The Linux container runs the console app and tests. It also enables
+`EnableWindowsTargeting` so the Windows Forms project can be restored and built;
+running that UI requires Windows. Use Linux paths in project XML files inside the
+container; host drives must be mounted explicitly to scan files outside the workspace.
+
+Named volumes survive container rebuilds:
+
+| Volume | Contents |
+| --- | --- |
+| `claude-code-config` | Claude Code configuration, plugins, login, and history |
+| `codex-config` | Codex configuration, login, and history; also used by Claude's Codex plugin |
+| `gh-cli-config` | GitHub CLI configuration and login |
+| `nuget-packages` | Shared NuGet package cache |
+| `mydupfinder-artifacts-${devcontainerId}` | Container-specific build output and intermediate files |
+
+The three login volumes use the same names as the Rust UI devcontainer, so they
+share logins when both containers use the same Docker engine. These volumes do
+not automatically import logins from Windows. Build artifacts live in
+`/home/vscode/.cache/mydupfinder/artifacts`, separate from host `bin`/`obj` folders,
+to avoid mixing Windows and Linux restore results and to speed up builds on
+bind-mounted Windows workspaces.
+
+On first use, run `claude`, `gh auth login`, and
+`codex login --device-auth` as needed. Fresh Codex configurations use
+`cli_auth_credentials_store = "file"` to keep the login in the shared volume,
+as described in the [Codex authentication documentation](https://learn.chatgpt.com/docs/auth#credential-storage).
+Existing shared Codex settings are preserved; if they explicitly select `keyring`
+or `ephemeral`, switch that setting to `file` to persist and share the login.
+Inside Claude Code, use `/codex:setup` to check the integration and `/codex:review`
+to review changes. Reload plugins or restart Claude if it was open during setup.
+
 ## Command Line Usage
 
 ```bash
