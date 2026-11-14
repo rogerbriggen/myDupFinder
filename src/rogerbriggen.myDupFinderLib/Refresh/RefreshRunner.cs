@@ -248,11 +248,12 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
     private string CalcHash(string filePath)
     {
-        using var sha512 = SHA512.Create();
-        using var stream = File.OpenRead(filePath);
+        // The hash stage covers opening, reading, hashing and closing the file
         long hashStart = Throughput.StartStage();
         try
         {
+            using var sha512 = SHA512.Create();
+            using var stream = File.OpenRead(filePath);
             return BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
         }
         finally

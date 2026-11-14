@@ -165,35 +165,32 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
         long hashedBytes = 0;
         try
         {
-            using (var sha512 = SHA512.Create())
+            // The hash stage covers opening, reading, hashing and closing the file
+            long hashStart = Throughput.StartStage();
+            try
             {
-                using (var stream = File.OpenRead(item.FilenameAndPath))
-                {
-                    long hashStart = Throughput.StartStage();
-                    try
-                    {
-                        item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
-                    }
-                    finally
-                    {
-                        Throughput.EndStage(ThroughputStage.Hash, hashStart);
-                    }
-                    hashedBytes = item.FileSize;
+                using var sha512 = SHA512.Create();
+                using var stream = File.OpenRead(item.FilenameAndPath);
+                item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
+            }
+            finally
+            {
+                Throughput.EndStage(ThroughputStage.Hash, hashStart);
+            }
+            hashedBytes = item.FileSize;
 
-                    long dbStart = Throughput.StartStage();
-                    try
-                    {
-                        ScanJobDBInserts.Enqueue(item);
-                    }
-                    finally
-                    {
-                        Throughput.EndStage(ThroughputStage.Database, dbStart);
-                    }
-                    if (_logger.IsEnabled(LogLevel.Trace))
-                    {
-                        _logger.LogTrace("File {file} successfull finished", item.FilenameAndPath);
-                    }
-                }
+            long dbStart = Throughput.StartStage();
+            try
+            {
+                ScanJobDBInserts.Enqueue(item);
+            }
+            finally
+            {
+                Throughput.EndStage(ThroughputStage.Database, dbStart);
+            }
+            if (_logger.IsEnabled(LogLevel.Trace))
+            {
+                _logger.LogTrace("File {file} successfull finished", item.FilenameAndPath);
             }
         }
 #pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen

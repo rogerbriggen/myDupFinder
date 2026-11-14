@@ -28,7 +28,7 @@ Optional: `MYDUPFINDER_BENCHMARK_FILES` sets the number of files (default 5000, 
 
 1. Generates a deterministic tree in a temporary directory: nested directories, a mix of file sizes (70 % between 64 B and 4 KB, 25 % up to 256 KB, 5 % up to 4 MB) and 20 % of the files as copies of another file. The same options always give the same tree (seeded `Random`, no external data).
 2. Runs a scan job on it from start to end against a new temporary database, in the test thread, without throttling.
-3. Writes two lines to the test output and deletes the temporary directory (tree and database) afterwards.
+3. Writes two lines to the test output and deletes the temporary directory (tree and database) afterwards. The benchmark fails if any file failed or is missing in the database (error rows, row count and hashed bytes are checked).
 
 The tree generator is `TestTreeGenerator` in the test project and can be used by other tests.
 
@@ -47,7 +47,7 @@ Scan: 5000 files, 719.7 MB hashed in 8.3 s. Average 601.0 files/s, 86.5 MB/s. St
 - **Average files/s, MB/s**: totals divided by elapsed.
 - **Stage time**: time the runner spent in
   - `enumerate`: in the scan, walking the directories and reading file attributes; in refresh and check, only the directory listing,
-  - `hash`: reading the files and calculating SHA-512,
+  - `hash`: opening, reading, hashing (SHA-512) and closing the files,
   - `database`: everything done with the database, i.e. resume lookups, inserts, updates, removals and commits (check: the initial load of the rows).
 
   The stages do not add up to elapsed exactly: code that no stage measures (and the throttle) is missing.
