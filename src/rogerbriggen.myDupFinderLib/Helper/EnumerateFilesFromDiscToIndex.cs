@@ -71,7 +71,10 @@ public class EnumerateFilesFromDiscToIndex : IEnumerateFilesToIndex
                 //Check if we are done
                 if (loopCount >= maxFiles)
                 {
-                    _logger.LogDebug($"EnumerateFiles: CurrentCount: {CurrentCount} File: {_files.Current}");
+                    if (_logger.IsEnabled(LogLevel.Trace))
+                    {
+                        _logger.LogTrace($"EnumerateFiles: CurrentCount: {CurrentCount} File: {_files.Current}");
+                    }
                     //make a break
                     return;
                 }

@@ -43,8 +43,25 @@ public class DiscThrottle
         MinimumWorkTimeInMs = minimumWorkTimeInMs;
     }
 
+    /// <summary>
+    /// Minimum time worked before the jobs start to throttle.
+    /// </summary>
+    public static readonly TimeSpan DefaultMinimumWorkTime = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Creates the throttle for a job, or returns null when the job does not want throttling (0 percent).
+    /// </summary>
+    /// <param name="throttlePercent">The ThrottlePercent job setting (0 - 70)</param>
+    public static DiscThrottle? CreateForJob(uint throttlePercent) => throttlePercent > 0 ? new DiscThrottle(throttlePercent, DefaultMinimumWorkTime.TotalMilliseconds) : null;
+
     public void Throttle(CancellationToken? cancelToken = null)
     {
+        //0 percent means no throttling at all... don't even look at the clock
+        if (ThrottlePercent == 0)
+        {
+            return;
+        }
+
         //Not started... start it
         if (StartTime is null)
         {

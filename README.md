@@ -41,6 +41,7 @@ The application is configured through an XML project file. You can generate an e
       <ScanName>Backup of old computer</ScanName>
       <DatabaseFile>m:\finddupdb\base.db</DatabaseFile>
       <ReportPath>m:\finddupdb\</ReportPath>
+      <ThrottlePercent>0</ThrottlePercent>
     </MyDupFinderScanJobDTO>
   </MyDupFinderScanJobDTOs>
 
@@ -54,6 +55,7 @@ The application is configured through an XML project file. You can generate an e
         <ScanName>Backup of old computer</ScanName>
         <DatabaseFile>m:\finddupdb\base.db</DatabaseFile>
         <ReportPath>m:\finddupdb\</ReportPath>
+        <ThrottlePercent>0</ThrottlePercent>
       </ScanJobDTO>
       <IgnoreBasePath>false</IgnoreBasePath>
       <SkipHashCheck>true</SkipHashCheck>
@@ -80,11 +82,20 @@ The application is configured through an XML project file. You can generate an e
       <ScanName>Backup of old computer</ScanName>
       <DatabaseFile>m:\finddupdb\base.db</DatabaseFile>
       <ReportPath>m:\finddupdb\</ReportPath>
+      <ThrottlePercent>0</ThrottlePercent>
     </MyDupFinderRefreshJobDTO>
   </MyDupFinderRefreshJobDTOs>
 
 </MyDupFinderProjectDTO>
 ```
+
+### Throttling, progress and logging
+
+- **`ThrottlePercent`** (scan, refresh and the scan part of check jobs): `0` to `70`, default `0` = no throttling. The element may be left out. With a value above 0 the job sleeps for that share of its working time, but only after it has worked for 5 minutes, to spare an old hard disk. Values above 70 are rejected.
+- **Progress:** every 10 seconds the scan, refresh and check jobs write one line with the number of files, the hashed megabytes and the files/s and MB/s of the last interval, and a summary with the time per stage (enumerate, hash, database) when they finish or are cancelled.
+- **Database state:** after opening the database the jobs log `journal_mode`, `synchronous` and the indexes of the `ScanItems` table once. Nothing is changed.
+- **Per-file messages** (a file was hashed, added, updated, removed, is new/modified/missing in a check) are written at log level `Trace`, which the default configuration does not write. Errors and warnings per file are always written. To see the per-file messages, configure the minimum level `Verbose` (Serilog) / `Trace`.
+- To measure how fast a scan is, see [docs/benchmark.md](docs/benchmark.md).
 
 ### Find Duplicates Modes
 
