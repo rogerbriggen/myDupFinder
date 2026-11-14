@@ -814,6 +814,173 @@ public class ScanJobDBInsertsBatchTest : IDisposable
         Assert.Equal(0, db.TrackedEntityCount);
     }
 
+    // ---- Rows that are loaded through the lookups or that are tracked in the context already ----
+
+    public enum Lookup
+    {
+        ById,
+        ByPath,
+        BySuffix,
+    }
+
+    public enum Operation
+    {
+        Touch,
+        Update,
+        Remove,
+    }
+
+    private static ScanItemDto LookupA(ScanJobDBInserts db, Lookup lookup, Guid idOfA) => lookup switch
+    {
+        Lookup.ById => db.GetItemById(idOfA)!,
+        Lookup.ByPath => db.GetItemByPath(BasePath + "a")!,
+        _ => db.GetItemsByRelativeSuffix("a").Single(),
+    };
+
+    private void QueueAndAssert(ScanJobDBInserts db, Operation operation, ScanItemDto a, ScanItemDto b)
+    {
+        switch (operation)
+        {
+            case Operation.Touch:
+                db.TouchItem(a, Date1);
+                break;
+            case Operation.Update:
+                db.UpdateItem(a, 222, Modification, "NEW_HASH", Date1);
+                break;
+            default:
+                db.RemoveItem(a);
+                break;
+        }
+        Assert.Equal(1, db.PendingCount);
+
+        db.WriteChanges();
+
+        Assert.Equal(0, db.PendingCount);
+        Assert.Equal(0, db.TrackedEntityCount);
+        switch (operation)
+        {
+            case Operation.Touch:
+                AssertTouchOnly(ReadRow(a.Id), Date1);
+                Assert.Equal(2, CommittedItemCount());
+                break;
+            case Operation.Update:
+                AssertUpdated(ReadRow(a.Id), 222, "NEW_HASH", Date1, Date1);
+                Assert.Equal(2, CommittedItemCount());
+                break;
+            default:
+                Assert.Equal(1, CommittedItemCount());
+                using (var check = OpenContext())
+                {
+                    Assert.DoesNotContain(check.ScanItems!.AsNoTracking().ToList(), i => i.Id == a.Id);
+                }
+                break;
+        }
+        // The other row was not touched
+        Assert.Equal("CHANGED_BY_OTHER", ReadRow(b.Id).FileSha512Hash);
+    }
+
+    [Theory]
+    [InlineData(Lookup.ById, Operation.Touch)]
+    [InlineData(Lookup.ById, Operation.Update)]
+    [InlineData(Lookup.ById, Operation.Remove)]
+    [InlineData(Lookup.ByPath, Operation.Touch)]
+    [InlineData(Lookup.ByPath, Operation.Update)]
+    [InlineData(Lookup.ByPath, Operation.Remove)]
+    [InlineData(Lookup.BySuffix, Operation.Touch)]
+    [InlineData(Lookup.BySuffix, Operation.Update)]
+    [InlineData(Lookup.BySuffix, Operation.Remove)]
+    public void LoadedWithLookup_ThenQueuedOperation_IsWrittenAndNothingStaysTracked(Lookup lookup, Operation operation)
+    {
+        var (db, seededA, b) = SeedAndLoadTwo();
+        using var _ = db;
+        var a = LookupA(db, lookup, seededA.Id);
+        Assert.Equal(0, db.TrackedEntityCount);
+
+        QueueAndAssert(db, operation, a, b);
+    }
+
+    [Theory]
+    [InlineData(Operation.Touch)]
+    [InlineData(Operation.Update)]
+    [InlineData(Operation.Remove)]
+    public void AlreadyTrackedEntity_ThenQueuedOperation_IsWrittenAndOtherColumnsAreNotFlagged(Operation operation)
+    {
+        var (db, seededA, b) = SeedAndLoadTwo();
+        using var _ = db;
+        var context = db.ContextForTests!;
+        var tracked = context.ScanItems!.First(i => i.Id == seededA.Id);
+        Assert.Equal(EntityState.Unchanged, context.Entry(tracked).State);
+        // Changed without telling EF (change detection is off): must not be written
+        tracked.ScanName = "MUTATED_IN_TRACKER";
+        tracked.PathBase = "/mutated/";
+
+        QueueAndAssert(db, operation, ReadRow(seededA.Id), b);
+
+        if (operation != Operation.Remove)
+        {
+            var row = ReadRow(seededA.Id);
+            Assert.Equal("CHANGED_BY_OTHER", row.ScanName);
+            Assert.Equal("/other/", row.PathBase);
+        }
+    }
+
+    [Fact]
+    public void AlreadyTrackedAsModified_ThenTouch_KeepsEarlierFlagsAndWritesTheTouch()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var context = db.ContextForTests!;
+        var tracked = context.ScanItems!.First(i => i.Id == a.Id);
+        context.Entry(tracked).Property(i => i.FileSize).CurrentValue = 4711;
+        context.Entry(tracked).Property(i => i.FileSize).IsModified = true;
+
+        db.TouchItem(a, Date1);
+        db.WriteChanges();
+
+        var row = ReadRow(a.Id);
+        Assert.Equal(Date1, row.LastScanDateUTC);
+        Assert.Equal(4711, row.FileSize);
+        Assert.Equal("CHANGED_BY_OTHER", row.FileSha512Hash);
+        AssertColumnsOutsideOperationsUntouched(row);
+        Assert.Equal(0, db.TrackedEntityCount);
+    }
+
+    [Fact]
+    public void AlreadyTrackedAsDeleted_ThenTouchOrUpdate_RowStaysDeleted_AndUpdateDoesNotCount()
+    {
+        var (db, a, b) = SeedAndLoadTwo();
+        using var _ = db;
+        var context = db.ContextForTests!;
+        context.Remove(context.ScanItems!.First(i => i.Id == a.Id));
+
+        db.TouchItem(a, Date1);
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date2);
+        db.RemoveItem(a);
+        db.WriteChanges();
+
+        Assert.Equal(1, CommittedItemCount());
+        Assert.Equal("CHANGED_BY_OTHER", ReadRow(b.Id).FileSha512Hash);
+        Assert.Equal(2, db.TotalSuccessCount);
+        Assert.Equal(0, db.TrackedEntityCount);
+        Assert.Equal(0, db.PendingCount);
+    }
+
+    [Fact]
+    public void InsertItem_WhenItFails_LeavesNothingTracked()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var duplicateKey = CreateItem("duplicate");
+        duplicateKey.Id = a.Id;
+
+        Assert.ThrowsAny<Exception>(() => db.InsertItem(duplicateKey));
+
+        Assert.Equal(0, db.TrackedEntityCount);
+        db.TouchItem(a, Date1);
+        db.WriteChanges();
+        AssertTouchOnly(ReadRow(a.Id), Date1);
+    }
+
     // ---- Items without an Id (the way the runners create them) ----
 
     private static ScanItemDto CreateItemWithoutId(string name, string hash = "HASH", long size = 100)

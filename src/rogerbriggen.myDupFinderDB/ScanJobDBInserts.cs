@@ -95,6 +95,11 @@ public class ScanJobDBInserts : IDisposable
     }
 
     /// <summary>
+    /// The context itself, only for tests that need to put an entity into the change tracker on purpose.
+    /// </summary>
+    internal DubFinderContext? ContextForTests => _dbContext;
+
+    /// <summary>
     /// Gets the number of entities the change tracker currently holds (for tests and diagnostics).
     /// </summary>
     internal int TrackedEntityCount
@@ -254,6 +259,7 @@ public class ScanJobDBInserts : IDisposable
         // Needed because the same row can be touched, updated and removed several times (also through different objects).
         var trackedById = new Dictionary<Guid, ScanItemDto>();
         var removedIds = new HashSet<Guid>();
+        var insertedIds = new HashSet<Guid>();
         try
         {
             using var transaction = _dbContext.Database.BeginTransaction();
@@ -266,6 +272,7 @@ public class ScanJobDBInserts : IDisposable
                         case PendingKind.InsertItem:
                             _dbContext.Add(op.Item!);
                             trackedById[op.Item!.Id] = op.Item!;
+                            insertedIds.Add(op.Item!.Id);
                             successCount++;
                             break;
                         case PendingKind.InsertError:
@@ -282,7 +289,7 @@ public class ScanJobDBInserts : IDisposable
                             }
                             break;
                         case PendingKind.Remove:
-                            if (ApplyRemove(op.Id, trackedById, removedIds))
+                            if (ApplyRemove(op.Id, trackedById, removedIds, insertedIds))
                             {
                                 // The row was inserted earlier in this batch and is dropped again: nothing was written
                                 successCount--;
@@ -330,14 +337,37 @@ public class ScanJobDBInserts : IDisposable
     }
 
     /// <summary>
+    /// Returns the entity that represents the key in the change tracker, or null if the key is not tracked at all.
+    /// Looks in the entities of this batch first, then in everything the context tracks already (a row that was
+    /// loaded tracked, or left over). The lookup uses the identity map of the tracker by key: no database query and no
+    /// DetectChanges (which is off anyway).
+    /// </summary>
+    private ScanItemDto? FindTracked(Guid id, Dictionary<Guid, ScanItemDto> trackedById, out bool isDeleted)
+    {
+        isDeleted = false;
+        if (trackedById.TryGetValue(id, out var inBatch))
+        {
+            return inBatch;
+        }
+        var entry = _dbContext!.Set<ScanItemDto>().Local.FindEntry(nameof(ScanItemDto.Id), id);
+        if (entry is null)
+        {
+            return null;
+        }
+        isDeleted = entry.State == EntityState.Deleted;
+        return entry.Entity;
+    }
+
+    /// <summary>
     /// Applies a touch (only LastScanDateUTC) or an update (the five update columns) from the values captured in the
-    /// operation. One entity is tracked per primary key: if the key is already tracked in this batch (for example because
-    /// the row was inserted earlier in the batch), the values are set on that entity and the modified flags are added
-    /// (an entity that is Added stays Added and simply gets the values). Otherwise a stub entity that carries only the Id
-    /// is attached (state Unchanged), the values are set on it and exactly those properties are flagged as modified, so
-    /// EF writes only these columns and never the default values of the other properties.
-    /// The change detection is off, so the flags are set explicitly.
-    /// Must be called with the lock held. Returns false if the operation was ignored because the row is removed in this batch.
+    /// operation. One entity is used per primary key: if the key is already tracked (because the row was inserted earlier
+    /// in the batch, or because the context tracked it before), the values are set on that entity and the modified flags
+    /// are added (an entity that is Added stays Added and simply gets the values). If it is tracked as Deleted, the key
+    /// counts as removed and the operation is ignored. Otherwise a stub entity that carries only the Id is attached
+    /// (state Unchanged), the values are set on it and exactly those properties are flagged as modified, so EF writes
+    /// only these columns and never the default values of the other properties.
+    /// The change detection is off, so the flags are set explicitly and other properties of a reused entity are not written.
+    /// Must be called with the lock held. Returns false if the operation was ignored because the row is removed.
     /// </summary>
     private bool ApplyModification(PendingOperation op, bool fullUpdate, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
     {
@@ -345,7 +375,13 @@ public class ScanJobDBInserts : IDisposable
         {
             return false;
         }
-        if (!trackedById.TryGetValue(op.Id, out var target))
+        var target = FindTracked(op.Id, trackedById, out bool isDeleted);
+        if (isDeleted)
+        {
+            removedIds.Add(op.Id);
+            return false;
+        }
+        if (target is null)
         {
             if (op.Id == Guid.Empty)
             {
@@ -353,8 +389,8 @@ public class ScanJobDBInserts : IDisposable
             }
             target = new ScanItemDto { Id = op.Id };
             _dbContext!.Attach(target);
-            trackedById[op.Id] = target;
         }
+        trackedById[op.Id] = target;
 
         target.LastScanDateUTC = op.LastScanDateUTC;
         if (fullUpdate)
@@ -385,16 +421,22 @@ public class ScanJobDBInserts : IDisposable
     /// <summary>
     /// Applies a remove by primary key. Works on whatever entity is tracked for the key, otherwise on a stub entity
     /// that carries only the Id; operations on the key that come later in the same batch are ignored.
-    /// Returns true if the row was inserted earlier in this batch (so nothing is written at all).
+    /// Returns true if the row was inserted by this batch (so nothing is written at all).
     /// Must be called with the lock held.
     /// </summary>
-    private bool ApplyRemove(Guid id, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    private bool ApplyRemove(Guid id, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds, HashSet<Guid> insertedIds)
     {
         if (!removedIds.Add(id))
         {
             return false;
         }
-        if (!trackedById.TryGetValue(id, out var target))
+        var target = FindTracked(id, trackedById, out bool isDeleted);
+        if (isDeleted)
+        {
+            // Already going to be deleted
+            return false;
+        }
+        if (target is null)
         {
             if (id == Guid.Empty)
             {
@@ -404,8 +446,8 @@ public class ScanJobDBInserts : IDisposable
             _dbContext!.Attach(target);
         }
         // Removing an entity that is Added drops it again: nothing is inserted
-        bool insertedInThisBatch = _dbContext!.Entry(target).State == EntityState.Added;
-        _dbContext.Remove(target);
+        bool insertedInThisBatch = insertedIds.Contains(id) && _dbContext!.Entry(target).State == EntityState.Added;
+        _dbContext!.Remove(target);
         return insertedInThisBatch;
     }
 
@@ -442,11 +484,11 @@ public class ScanJobDBInserts : IDisposable
     internal static List<ScanItemDto> GetAllItemsByScanIdentity(DubFinderContext context, string originComputer, string scanName) =>
         context.Set<ScanItemDto>().AsNoTracking().Where(s => s.OriginComputer == originComputer && s.ScanName == scanName).ToList();
 
-    internal static ScanItemDto? GetItemByPath(DubFinderContext context, string filenameAndPath) => context.Set<ScanItemDto>().FirstOrDefault(s => s.FilenameAndPath == filenameAndPath);
+    internal static ScanItemDto? GetItemByPath(DubFinderContext context, string filenameAndPath) => context.Set<ScanItemDto>().AsNoTracking().FirstOrDefault(s => s.FilenameAndPath == filenameAndPath);
 
-    internal static List<ScanItemDto> GetItemsByRelativeSuffix(DubFinderContext context, string relativeSuffix) => context.Set<ScanItemDto>().Where(s => s.FilenameAndPath.EndsWith(relativeSuffix)).ToList();
+    internal static List<ScanItemDto> GetItemsByRelativeSuffix(DubFinderContext context, string relativeSuffix) => context.Set<ScanItemDto>().AsNoTracking().Where(s => s.FilenameAndPath.EndsWith(relativeSuffix)).ToList();
 
-    internal static ScanItemDto? GetItemById(DubFinderContext context, Guid id) => context.Set<ScanItemDto>().FirstOrDefault(s => s.Id == id);
+    internal static ScanItemDto? GetItemById(DubFinderContext context, Guid id) => context.Set<ScanItemDto>().AsNoTracking().FirstOrDefault(s => s.Id == id);
 
     public bool IsAlreadyInDB(ScanItemDto si)
     {
@@ -688,9 +730,16 @@ public class ScanJobDBInserts : IDisposable
             {
                 existingItem.LastSha512ScanDateUTC = scanDateUTC;
             }
-            _dbContext.Entry(existingItem).State = EntityState.Modified;
-            _dbContext.SaveChanges();
-            _dbContext.Entry(existingItem).State = EntityState.Detached;
+            try
+            {
+                _dbContext.Entry(existingItem).State = EntityState.Modified;
+                _dbContext.SaveChanges();
+            }
+            finally
+            {
+                // Also when the save failed: a left over entity would be written (all columns) with the next flush
+                _dbContext.Entry(existingItem).State = EntityState.Detached;
+            }
             TotalSuccessCount++;
         }
     }
@@ -711,8 +760,16 @@ public class ScanJobDBInserts : IDisposable
             {
                 return false;
             }
-            _dbContext.Remove(existingItem);
-            _dbContext.SaveChanges();
+            try
+            {
+                _dbContext.Remove(existingItem);
+                _dbContext.SaveChanges();
+            }
+            finally
+            {
+                // Detached after a successful save anyway; after a failed one the entity must not stay as Deleted in the tracker
+                _dbContext.Entry(existingItem).State = EntityState.Detached;
+            }
             return true;
         }
     }
@@ -728,9 +785,16 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            _dbContext.Add(item);
-            _dbContext.SaveChanges();
-            _dbContext.Entry(item).State = EntityState.Detached;
+            try
+            {
+                _dbContext.Add(item);
+                _dbContext.SaveChanges();
+            }
+            finally
+            {
+                // Also when the save failed: a left over Added entity would be inserted again with the next flush
+                _dbContext.Entry(item).State = EntityState.Detached;
+            }
             TotalSuccessCount++;
         }
     }
