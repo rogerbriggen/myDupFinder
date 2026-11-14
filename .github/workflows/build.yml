@@ -1,6 +1,6 @@
 # Build and test the application
 
-name: ".NET 10"
+name: ".NET 11"
 
 on:
   push:
@@ -17,8 +17,8 @@ jobs:
       pull-requests: write
 
     env:
-      DOTNET_VERSION: 10.0.x
-      RELEASE_SUBDIR: net10.0
+      DOTNET_VERSION: 11.0.x
+      RELEASE_SUBDIR: net11.0
 
     steps:
     - name: Checkout
