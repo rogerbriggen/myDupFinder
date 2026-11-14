@@ -67,6 +67,39 @@ Revision 2: reworked after review feedback from Sol. The main changes are a miss
 
 4. **Small query fixes.** `IsEmptyScanItemTable` and `IsBasePathAlreadyInDB` use `Count()` where `Any()` is enough.
 
+### Result
+
+Implemented as step 3.1 and 3.4: the migration `AddFilenameAndPathIndex` and `Any()` instead of `Count()`. Step 3.3 is left as it is (the resume identity is unchanged, see [DatabaseIndexMigrationTest.cs](../tests/rogerbriggen.myDupFinderLibUnitTest/DatabaseIndexMigrationTest.cs) for the plans below).
+
+**Query plans** (`EXPLAIN QUERY PLAN` of the SQL that EF generates, empty table, after the migration):
+
+- `IsEmptyScanItemTable`: `SCAN s USING COVERING INDEX IX_ScanItems_FileSize`. Stops at the first row, so it is cheap.
+- `IsAlreadyInDB` (per file when resuming): `SEARCH s USING INDEX IX_ScanItems_FilenameAndPath (FilenameAndPath=?)`.
+- `GetItemByPath`: `SEARCH s USING INDEX IX_ScanItems_FilenameAndPath (FilenameAndPath=?)`.
+- `IsBasePathAlreadyInDB`: `SCAN s`. Stops at the first match; a base path that is not in the database yet scans the whole table once.
+- `GetAllItemsByBasePath`: `SCAN s`.
+- `GetAllItemsByScanIdentity`: `SCAN s`.
+- `GetItemsByRelativeSuffix`: `SCAN s` (`LIKE '%suffix'` cannot use an index). Not called by any runner at the moment.
+- `GetItemById`: `SEARCH s USING INDEX sqlite_autoindex_ScanItems_1 (Id=?)` (primary key).
+- `FindDupsInSameDB`: `SEARCH ScanItems USING INDEX IX_ScanItems_FileSha512Hash (FileSha512Hash=?)` with the subquery `SCAN ScanItems USING COVERING INDEX IX_ScanItems_FileSha512Hash`.
+- `GetAllScanItems`: `SCAN s USING INDEX IX_ScanItems_FileSha512Hash` plus `USE TEMP B-TREE FOR LAST TERM OF ORDER BY` (the sort by path).
+- `FindDupsInDifferentDBs`: `SCAN s USING COVERING INDEX IX_ScanItems_FileSha512Hash` on the second database to read the distinct hashes, then one `SEARCH s USING INDEX IX_ScanItems_FileSha512Hash` per hash in the base database.
+
+**The planner did not pick the new index at first.** With the original expression of `IsAlreadyInDB` (path, size and computer all compared with `=`) SQLite, which has no table statistics here, chose `IX_ScanItems_FileSize` instead of `IX_ScanItems_FilenameAndPath`. The size index is far less selective (many files share a size). The query now compares `FileSize + 0`, which has the same value but cannot use the size index, so the path index is always the one used. The result is unchanged.
+
+**Decision: no index on `PathBase` or on `(OriginComputer, ScanName)`.** `IsBasePathAlreadyInDB`, `GetAllItemsByBasePath` and `GetAllItemsByScanIdentity` run once per scan, refresh or check run (scan: `IsBasePathAlreadyInDB` once and only if the table is not empty; refresh: `GetAllItemsByBasePath` once; check: `GetAllItemsByBasePath` or, with `IgnoreBasePath`, `GetAllItemsByScanIdentity` once). They return a large part of the table or all of it, so a full scan is the right plan, while every additional index makes every insert slower. `IsAlreadyInDB` is the only query that runs once per file.
+
+**Resume benchmark** (`Rescan_GeneratedTree_ReportsResumeTimings`, 20000 small files, the second run skips every file; "Scan:" line of the second run):
+
+| Case | Line |
+| --- | --- |
+| After (migration applied, path index used) | `Scan: 20000 files, 0.0 MB hashed in 1.8 s. Average 11379.1 files/s, 0.0 MB/s. Stage time: enumerate=0.8 s, hash=0.0 s, database=0.9 s` |
+| Before, as the databases are today (no path index, the planner uses the size index; file sizes 64 B to 64 KB, so only a few files share a size) | `Scan: 20000 files, 0.0 MB hashed in 2.4 s. Average 8467.9 files/s, 0.0 MB/s. Stage time: enumerate=1.0 s, hash=0.0 s, database=1.4 s` |
+| Before, no usable index (all files the same size, so the size index does not help) | `Scan: 20000 files, 0.0 MB hashed in 132.0 s. Average 151.6 files/s, 0.0 MB/s. Stage time: enumerate=0.8 s, hash=0.0 s, database=131.1 s` |
+| Before, no usable index (the new query with the index dropped, different sizes) | `Scan: 20000 files, 0.0 MB hashed in 125.6 s. Average 159.3 files/s, 0.0 MB/s. Stage time: enumerate=0.8 s, hash=0.0 s, database=124.7 s` |
+
+The gain is small when file sizes are spread out, because the size index happens to narrow the search to a few rows. It is large when many files share a size (empty files, thumbnails, generated files): the cost per file then grows with the table and the resume of a large scan becomes quadratic. The path index makes the cost per file independent of both. (The "after" run was measured on the spread-out tree only.)
+
 ## Step 4 — Enumeration and check lookup
 
 1. **Read metadata from the directory listing.**

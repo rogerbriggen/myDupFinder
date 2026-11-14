@@ -14,7 +14,7 @@ namespace RogerBriggen.myDupFinderDB.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "5.0.1");
+                .HasAnnotation("ProductVersion", "10.0.14");
 
             modelBuilder.Entity("RogerBriggen.MyDupFinderData.ScanErrorItemDto", b =>
                 {
@@ -129,6 +129,8 @@ namespace RogerBriggen.myDupFinderDB.Migrations
                     b.HasIndex("FileSize");
 
                     b.HasIndex("Filename");
+
+                    b.HasIndex("FilenameAndPath");
 
                     b.ToTable("ScanItems");
                 });

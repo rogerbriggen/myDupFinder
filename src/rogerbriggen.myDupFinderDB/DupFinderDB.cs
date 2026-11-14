@@ -32,7 +32,7 @@ public class DubFinderDB : IDisposable
             Directory.CreateDirectory(Path.GetDirectoryName(databaseFile) ?? "");
             _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile);
             _dbContext = new DubFinderContext(_dbContextOptions);
-            _dbContext.Database.Migrate();
+            DatabaseMigrator.Migrate(_dbContext, _logger, databaseFile);
             _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
         }
 
@@ -53,11 +53,42 @@ public class DubFinderDB : IDisposable
             //     .Where(x => x.Count() > 1)
             //     .ToList
 
-            var duplicates = _dbContext.ScanItems?
-                .FromSqlInterpolated($"SELECT * FROM ScanItems WHERE FileSha512Hash IN (SELECT FileSha512Hash FROM ScanItems GROUP BY FileSHA512Hash HAVING COUNT(*) >1) ORDER BY FileSha512Hash")
-                .ToList();
-            return duplicates;
+            return FindDupsInSameDB(_dbContext);
         }
+    }
+
+    // The queries are static and take the context, so the tests can run them with the real code and look at the SQL and the query plan.
+
+    internal static List<ScanItemDto> FindDupsInSameDB(DubFinderContext context) =>
+        context.Set<ScanItemDto>()
+            .FromSqlInterpolated($"SELECT * FROM ScanItems WHERE FileSha512Hash IN (SELECT FileSha512Hash FROM ScanItems GROUP BY FileSHA512Hash HAVING COUNT(*) >1) ORDER BY FileSha512Hash")
+            .ToList();
+
+    internal static List<ScanItemDto> GetAllScanItems(DubFinderContext context) =>
+        context.Set<ScanItemDto>()
+            .OrderBy(s => s.FileSha512Hash)
+            .ThenBy(s => s.FilenameAndPath)
+            .ToList();
+
+    internal static List<ScanItemDto>? FindDupsInDifferentDBs(DubFinderContext context, DubFinderContext secondContext)
+    {
+        // Load hashes from the second database
+        var secondDbHashes = secondContext.Set<ScanItemDto>()
+            .Where(s => s.FileSha512Hash != null && s.FileSha512Hash != string.Empty)
+            .Select(s => s.FileSha512Hash)
+            .Distinct()
+            .ToList();
+
+        if (secondDbHashes.Count == 0)
+        {
+            return null;
+        }
+
+        // Find items in the base database that match hashes from the second database
+        return context.Set<ScanItemDto>()
+            .Where(s => secondDbHashes.Contains(s.FileSha512Hash))
+            .OrderBy(s => s.FileSha512Hash)
+            .ToList();
     }
 
     /// <summary>
@@ -72,10 +103,7 @@ public class DubFinderDB : IDisposable
         }
         lock (dbContextLock)
         {
-            return _dbContext.ScanItems?
-                .OrderBy(s => s.FileSha512Hash)
-                .ThenBy(s => s.FilenameAndPath)
-                .ToList();
+            return GetAllScanItems(_dbContext);
         }
     }
 
@@ -115,26 +143,8 @@ public class DubFinderDB : IDisposable
 
         lock (dbContextLock)
         {
-            // Load hashes from the second database
             using var secondDbContext = DubFinderContextFactory.CreateDubFinderContext(secondDatabaseFile);
-            var secondDbHashes = secondDbContext.ScanItems?
-                .Where(s => s.FileSha512Hash != null && s.FileSha512Hash != string.Empty)
-                .Select(s => s.FileSha512Hash)
-                .Distinct()
-                .ToList();
-
-            if (secondDbHashes is null || secondDbHashes.Count == 0)
-            {
-                return null;
-            }
-
-            // Find items in the base database that match hashes from the second database
-            var duplicates = _dbContext.ScanItems?
-                .Where(s => secondDbHashes.Contains(s.FileSha512Hash))
-                .OrderBy(s => s.FileSha512Hash)
-                .ToList();
-
-            return duplicates;
+            return FindDupsInDifferentDBs(_dbContext, secondDbContext);
         }
     }
 

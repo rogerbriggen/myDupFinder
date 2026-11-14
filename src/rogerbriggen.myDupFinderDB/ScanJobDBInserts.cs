@@ -102,7 +102,7 @@ public class ScanJobDBInserts : IDisposable
             Directory.CreateDirectory(Path.GetDirectoryName(databaseFile) ?? "");
             _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile);
             _dbContext = new DubFinderContext(_dbContextOptions);
-            _dbContext.Database.Migrate();
+            DatabaseMigrator.Migrate(_dbContext, _logger, databaseFile);
             _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
             TotalSuccessCount = 0;
             TotalErrorCount = 0;
@@ -375,21 +375,36 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            var itemCount = _dbContext.ScanItems?.Count();
-            if (itemCount is null)
-            {
-                return true;
-            }
-            else if (itemCount == 0)
-            {
-                return true;
-            }
-            else
-            {
-                return false;
-            }
+            return IsEmptyScanItemTable(_dbContext);
         }
     }
+
+    // The queries are static and take the context, so the tests can run them with the real code and look at the SQL and the query plan.
+
+    internal static bool IsEmptyScanItemTable(DubFinderContext context) => !context.Set<ScanItemDto>().Any();
+
+    internal static int CountAlreadyInDB(DubFinderContext context, ScanItemDto si)
+    {
+        string filenameAndPath = si.FilenameAndPath;
+        long fileSize = si.FileSize;
+        string scanExecutionComputer = si.ScanExecutionComputer;
+        // "FileSize + 0" has the same value as FileSize, but keeps SQLite from using the (much less selective) FileSize index.
+        // Without table statistics SQLite chose that index for this query instead of the FilenameAndPath index (see the query plan test).
+        return context.Set<ScanItemDto>().Count(s => (s.FilenameAndPath == filenameAndPath) && (s.FileSize + 0 == fileSize) && (s.ScanExecutionComputer == scanExecutionComputer));
+    }
+
+    internal static bool IsBasePathAlreadyInDB(DubFinderContext context, string basePath) => context.Set<ScanItemDto>().Any(s => s.PathBase == basePath);
+
+    internal static List<ScanItemDto> GetAllItemsByBasePath(DubFinderContext context, string basePath) => context.Set<ScanItemDto>().AsNoTracking().Where(s => s.PathBase == basePath).ToList();
+
+    internal static List<ScanItemDto> GetAllItemsByScanIdentity(DubFinderContext context, string originComputer, string scanName) =>
+        context.Set<ScanItemDto>().AsNoTracking().Where(s => s.OriginComputer == originComputer && s.ScanName == scanName).ToList();
+
+    internal static ScanItemDto? GetItemByPath(DubFinderContext context, string filenameAndPath) => context.Set<ScanItemDto>().FirstOrDefault(s => s.FilenameAndPath == filenameAndPath);
+
+    internal static List<ScanItemDto> GetItemsByRelativeSuffix(DubFinderContext context, string relativeSuffix) => context.Set<ScanItemDto>().Where(s => s.FilenameAndPath.EndsWith(relativeSuffix)).ToList();
+
+    internal static ScanItemDto? GetItemById(DubFinderContext context, Guid id) => context.Set<ScanItemDto>().FirstOrDefault(s => s.Id == id);
 
     public bool IsAlreadyInDB(ScanItemDto si)
     {
@@ -399,12 +414,8 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            var itemCount = _dbContext.ScanItems?.Where(s => ((s.FilenameAndPath == si.FilenameAndPath) && (s.FileSize == si.FileSize) && (s.ScanExecutionComputer == si.ScanExecutionComputer))).Count();
-            if (itemCount is null)
-            {
-                return false;
-            }
-            else if (itemCount == 0)
+            int itemCount = CountAlreadyInDB(_dbContext, si);
+            if (itemCount == 0)
             {
                 return false;
             }
@@ -430,22 +441,8 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-
-            var itemCount = _dbContext.ScanItems?.Where(s => (s.PathBase == basePath)).Count();
-
-            if (itemCount is null)
-            {
-                return false;
-            }
-            else if (itemCount == 0)
-            {
-                return false;
-            }
-            else
-            {
-                //There are already some in the database
-                return true;
-            }
+            //true if there are already some in the database
+            return IsBasePathAlreadyInDB(_dbContext, basePath);
         }
 
     }
@@ -464,7 +461,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            return _dbContext.ScanItems?.AsNoTracking().Where(s => s.PathBase == basePath).ToList() ?? new List<ScanItemDto>();
+            return GetAllItemsByBasePath(_dbContext, basePath);
         }
     }
 
@@ -480,10 +477,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            return _dbContext.ScanItems?
-                .AsNoTracking()
-                .Where(s => s.OriginComputer == originComputer && s.ScanName == scanName)
-                .ToList() ?? new List<ScanItemDto>();
+            return GetAllItemsByScanIdentity(_dbContext, originComputer, scanName);
         }
     }
 
@@ -563,7 +557,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            return _dbContext.ScanItems?.FirstOrDefault(s => s.FilenameAndPath == filenameAndPath);
+            return GetItemByPath(_dbContext, filenameAndPath);
         }
     }
 
@@ -580,7 +574,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            return _dbContext.ScanItems?.Where(s => s.FilenameAndPath.EndsWith(relativeSuffix)).ToList() ?? new List<ScanItemDto>();
+            return GetItemsByRelativeSuffix(_dbContext, relativeSuffix);
         }
     }
 
@@ -595,7 +589,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            return _dbContext.ScanItems?.FirstOrDefault(s => s.Id == id);
+            return GetItemById(_dbContext, id);
         }
     }
 
