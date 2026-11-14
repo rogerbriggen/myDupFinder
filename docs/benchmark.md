@@ -46,7 +46,7 @@ Scan: 5000 files, 719.7 MB hashed in 8.3 s. Average 601.0 files/s, 86.5 MB/s. St
 - **elapsed**: wall clock time of the run from after the database was opened. It includes everything, also sleeping in the throttle.
 - **Average files/s, MB/s**: totals divided by elapsed.
 - **Stage time**: time the runner spent in
-  - `enumerate`: in the scan, walking the directories and reading file attributes; in refresh and check, only the directory listing,
+  - `enumerate`: walking the directories, including the metadata (size, creation and last write time) that comes with the directory listing. The same in scan, refresh and check (since step 4 all three use the same enumerator and make no further file system call for the metadata),
   - `hash`: opening, reading, hashing (SHA-512) and closing the files,
   - `database`: everything done with the database, i.e. resume lookups, inserts, updates, removals and commits (check: the initial load of the rows).
 
@@ -69,3 +69,14 @@ Scan: 20000 files, 0.0 MB hashed in 1.8 s. Average 11379.1 files/s, 0.0 MB/s. St
 ```
 
 Numbers before and after the `FilenameAndPath` index are in the Result section of step 3 in [speed-up-plan.md](speed-up-plan.md).
+
+## Check benchmark (IgnoreBasePath)
+
+A third benchmark, `Check_IgnoreBasePath_MovedTree_ReportsTimings`, measures the lookup of rows by relative path in a check with `IgnoreBasePath` (step 4 of the plan). Same `MYDUPFINDER_BENCHMARK=1` gate; `MYDUPFINDER_BENCHMARK_FILES` sets the number of files (default for this test: 20000). Run only this one with `--filter "FullyQualifiedName~Check_IgnoreBasePath"`.
+
+1. Generates a tree of small files and scans it into a new temporary database.
+2. Renames the tree directory, so no stored path matches a path on disk.
+3. Checks the renamed tree with `IgnoreBasePath` and `SkipHashCheck` (the files are not read, so the time is the matching of rows, not hashing). Every file has to be found by its relative path.
+4. Writes one line with the total time and the stage times. The benchmark fails unless all files are reported as moved (`ModifiedNoHashChange`), none as new or missing and no error occurred.
+
+Numbers before and after the dictionary lookup are in the Result section of step 4 in [speed-up-plan.md](speed-up-plan.md).

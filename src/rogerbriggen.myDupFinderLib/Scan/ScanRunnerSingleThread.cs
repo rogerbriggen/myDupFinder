@@ -24,9 +24,10 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
     }
 
     /// <param name="dbInserts">Only for tests: a ready made object (for example with a small batch size). The runner disposes it.</param>
-    internal ScanRunnerSingleThread(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunnerSingleThread>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts) : base(logger, serviceProvider)
+    internal ScanRunnerSingleThread(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunnerSingleThread>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null) : base(logger, serviceProvider)
     {
         ScanJobDTO = scanJobDTO;
+        _fileSource = fileSource;
         ScanJobDBInserts = dbInserts ?? new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -41,6 +42,8 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
 
     private IEnumerateFilesToIndex? _enumerateFiles;
 
+    private readonly IFileEnumerationSource? _fileSource;
+
     /// <summary>
     /// Files, bytes and stage times of the current run.
     /// </summary>
@@ -54,8 +57,15 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
         ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile);
         _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
         Throughput = new ThroughputTracker(_logger);
-        _enumerateFiles = new EnumerateFilesFromDiscToIndex(ScanJobDTO, _serviceProvider.GetService<ILogger<EnumerateFilesFromDiscToIndex>>());
-        Scan();
+        try
+        {
+            _enumerateFiles = new EnumerateFilesFromDiscToIndex(ScanJobDTO, _serviceProvider.GetService<ILogger<EnumerateFilesFromDiscToIndex>>(), _fileSource);
+            Scan();
+        }
+        finally
+        {
+            (_enumerateFiles as IDisposable)?.Dispose();
+        }
         ScanJobDBInserts.Dispose();
     }
 
@@ -81,6 +91,7 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
                     WriteChanges();
                     _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
                     Throughput.LogSummary("Scanning cancelled");
+                    LogUnreadableSummary(complete: false);
                     RunnerState = IService.EServiceState.cancelled;
                     return;
                 }
@@ -134,6 +145,7 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
                         WriteChanges();
                         _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
                         Throughput.LogSummary("Scanning cancelled");
+                        LogUnreadableSummary(complete: false);
                         RunnerState = IService.EServiceState.cancelled;
                         return;
                     }
@@ -150,6 +162,7 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
             RunnerState = IService.EServiceState.finished;
             _logger.LogInformation($"Scanning finished... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
             Throughput.LogSummary("Scanning finished");
+            LogUnreadableSummary(complete: true);
         }
         catch (BatchWriteException ex)
         {
@@ -162,6 +175,24 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
         }
     }
 
+
+    /// <summary>
+    /// Directories that could not be read were already logged one by one when they were found. This repeats them in one place at the end,
+    /// because their files were NOT scanned and a long log is easy to miss.
+    /// </summary>
+    private void LogUnreadableSummary(bool complete)
+    {
+        var unreadable = _enumerateFiles?.UnreadableDirectories;
+        if (unreadable is null || unreadable.Count == 0)
+        {
+            return;
+        }
+        _logger.LogWarning(
+            "Scanning: {count} directories could not be read completely{scope}, the files below them were NOT scanned: {directories}",
+            unreadable.Count,
+            complete ? string.Empty : " (so far, the scan was cancelled before the end)",
+            UnreadableDirectoryLog.Join(unreadable));
+    }
 
     private void WriteChanges()
     {

@@ -117,6 +117,25 @@ The gain is small when file sizes are spread out, because the size index happens
    - `FindByRelativePath` in [CheckRunner.cs](../src/rogerbriggen.myDupFinderLib/Check/CheckRunner.cs) (line 316) scans all database rows for every file without an exact path match. When a whole tree has moved, that is N × N comparisons.
    - Build a dictionary from relative path to rows once, before the loop. Keep the current tie-breaking (first unclaimed row not under the current base path).
 
+### Result
+
+Implemented as planned, with one shared enumerator for scan, refresh and check (`FileTreeEnumeration` in `Helper/`).
+
+- **Metadata from the listing.** Path, size, creation time and last write time come from the directory entry (`FileSystemEnumerable<T>`); the three per-file calls (`GetCreationTimeUtc`, `GetLastWriteTimeUtc`, `new FileInfo().Length`) are gone from all three runners. `AttributesToSkip = 0` is set explicitly. This reproduces `Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)`, which uses `EnumerationOptions.CompatibleRecursive` (no attribute skipped, `IgnoreInaccessible = false`, special directories not returned) and, on Windows, enters junctions and directory symbolic links like normal directories (checked: it returns the files below them). Tests compare the new enumeration with `Directory.EnumerateFiles` (same paths, same order, several forms of the base path, hidden and system files and directories, empty and deep directories, junction and symbolic links where they can be created) and the values with the file APIs (`Kind == Utc`, equal ticks, assorted timestamps). Scan, refresh and check of an untouched tree show 0 updated and all Ok.
+- **Unreadable directories.** The enumerator lists one directory at a time from an explicit queue and records every directory whose listing fails (any exception), so the failing directory is known exactly. Scan logs a warning per directory and in the summary. Refresh keeps (does not remove) database rows below such a directory and check does not report them as `MissingOnDisk`; both count them in the summary. The decision is made at a directory boundary, ignoring case and the kind of separator. If the base path itself cannot be listed, nothing is removed or reported.
+- **Check with `IgnoreBasePath`.** The rows are indexed once by relative path (`RelativePathIndex`); a randomized test (4000 seeds) shows the same row is picked as by the old walk.
+- **Known limitation (not solved here).** Size and times are those of the directory entry. NTFS updates the entry lazily, so for hard linked files and for files that are being written they can be older than the values of the file itself, and with the enumeration running ahead of the hashing they are older still when the file is read. Step 6 re-reads size and time after hashing. Until then, do not scan, refresh or check files that are being written.
+
+Benchmarks (`MYDUPFINDER_BENCHMARK=1`, 20000 files, Release, same machine, Windows 11):
+
+| Benchmark | Before | After |
+| --- | --- | --- |
+| Scan (`Scan_GeneratedTree_ReportsTimings`) | `Scan: 20000 files, 2817.4 MB hashed in 8.4 s. Average 2391.5 files/s, 336.9 MB/s. Stage time: enumerate=0.9 s, hash=5.6 s, database=1.9 s` | `Scan: 20000 files, 2817.4 MB hashed in 7.0 s. Average 2861.5 files/s, 403.1 MB/s. Stage time: enumerate=0.1 s, hash=5.5 s, database=1.4 s` |
+| Resume (`Rescan_GeneratedTree_ReportsResumeTimings`, second run) | `Scan: 20000 files, 0.0 MB hashed in 1.8 s. Average 10999.6 files/s, 0.0 MB/s. Stage time: enumerate=0.9 s, hash=0.0 s, database=0.9 s` | `Scan: 20000 files, 0.0 MB hashed in 1.1 s. Average 17699.3 files/s, 0.0 MB/s. Stage time: enumerate=0.1 s, hash=0.0 s, database=1.1 s` |
+| Check `IgnoreBasePath`, moved tree (`Check_IgnoreBasePath_MovedTree_ReportsTimings`) | `Check IgnoreBasePath, 20000 files in a moved tree: 3.07 s total. 20000 files, 0.0 MB hashed in 3.1 s. Average 6531.8 files/s, 0.0 MB/s. Stage time: enumerate=0.1 s, hash=0.0 s, database=0.1 s` | `Check IgnoreBasePath, 20000 files in a moved tree: 0.28 s total. 20000 files, 0.0 MB hashed in 0.3 s. Average 73081.9 files/s, 0.0 MB/s. Stage time: enumerate=0.0 s, hash=0.0 s, database=0.1 s` |
+
+The enumerate time drops from about 0.9 s to 0.1 s on this machine with a warm cache; on hard disks and network shares, where each of the three removed calls is a round trip, the gain should be larger (not measured). The check before-time is small because the files and the rows come in nearly the same order and the old walk skips claimed rows with a cheap set lookup, but it still grows with the square of the number of files (about N/2 steps per file). Run-to-run variation of the scan timings is of the same order as the difference in the total time.
+
 ## Step 5 — Cross-database and report queries
 
 1. **Cross-database only-dups query** in [DupFinderDB.cs](../src/rogerbriggen.myDupFinderDB/DupFinderDB.cs) (line 105).

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,9 +23,15 @@ namespace RogerBriggen.MyDupFinderLib;
 /// </summary>
 internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 {
-    public CheckRunner(MyDupFinderCheckJobDTO checkJobDTO, ILogger<CheckRunner>? logger, IServiceProvider serviceProvider) : base(logger, serviceProvider)
+    public CheckRunner(MyDupFinderCheckJobDTO checkJobDTO, ILogger<CheckRunner>? logger, IServiceProvider serviceProvider) : this(checkJobDTO, logger, serviceProvider, null)
+    {
+    }
+
+    /// <param name="fileSource">Only for tests: where the files come from (for example with unreadable directories). Default: the real file system.</param>
+    internal CheckRunner(MyDupFinderCheckJobDTO checkJobDTO, ILogger<CheckRunner>? logger, IServiceProvider serviceProvider, IFileEnumerationSource? fileSource) : base(logger, serviceProvider)
     {
         CheckJobDTO = checkJobDTO;
+        _fileSource = fileSource ?? FileTreeEnumerationSource.Instance;
         DbInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -32,6 +39,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     private bool _disposed;
     private MyDupFinderCheckJobDTO CheckJobDTO { get; }
     private ScanJobDBInserts DbInserts { get; }
+    private readonly IFileEnumerationSource _fileSource;
 
     public int BitRotSuspectCount { get; private set; }
     public int ModifiedCount { get; private set; }
@@ -43,8 +51,20 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     public string? ReportFilePath { get; private set; }
 
     /// <summary>
+    /// Rows that were NOT reported as MissingOnDisk although no file was enumerated for them, because they lie below a directory that
+    /// could not be read. These files might well still exist.
+    /// </summary>
+    public int UnreadableProtectedCount { get; private set; }
+
+    /// <summary>
+    /// Directories that could not be read completely during the enumeration (final after the enumeration ended).
+    /// </summary>
+    public IReadOnlyList<UnreadableDirectory> UnreadableDirectories { get; private set; } = Array.Empty<UnreadableDirectory>();
+
+    /// <summary>
     /// Files, bytes and stage times of the current run. Files that are not hashed (SkipHashCheck) count as files
-    /// but add no hashed bytes. The enumerate time covers the directory listing only, the database time is the initial load of the rows.
+    /// but add no hashed bytes. The enumerate time covers the directory listing including the metadata (size, timestamps) of the files,
+    /// the same as in scan and refresh. The database time is the initial load of the rows.
     /// </summary>
     internal ThroughputTracker Throughput { get; private set; }
 
@@ -108,31 +128,41 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             GeneratedUTC = DateTime.UtcNow,
         });
 
-        IEnumerable<string> files;
-        try
-        {
-            files = Directory.EnumerateFiles(basePath, "*", SearchOption.AllDirectories);
-        }
-#pragma warning disable CA1031 // Do not catch general exception types
-        catch (Exception ex)
-#pragma warning restore CA1031 // Do not catch general exception types
-        {
-            _logger.LogError(ex, "Error enumerating files in {basePath}", basePath);
-            RunnerState = IService.EServiceState.finished;
-            return;
-        }
+        // With IgnoreBasePath rows are also matched by their relative path: index them once instead of walking all rows for every file
+        var relativeIndex = CheckJobDTO.IgnoreBasePath ? new RelativePathIndex(existingByPath.Values, basePath) : null;
 
-        using var fileEnumerator = files.GetEnumerator();
+        using var fileEnumerator = _fileSource.Open(basePath);
+        UnreadableDirectories = fileEnumerator.UnreadableDirectories;
+        int unreadableLogged = 0;
         while (true)
         {
             long enumerateStart = Throughput.StartStage();
-            bool hasNext = fileEnumerator.MoveNext();
-            Throughput.EndStage(ThroughputStage.Enumerate, enumerateStart);
+            bool hasNext;
+            try
+            {
+                hasNext = fileEnumerator.MoveNext();
+            }
+#pragma warning disable CA1031 // Do not catch general exception types
+            catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+            {
+                // The base path itself cannot be listed: no file was enumerated, so no "missing" row may be reported
+                _logger.LogError(ex, "Error enumerating files in {basePath}. No missing files are reported.", basePath);
+                writer.Flush();
+                RunnerState = IService.EServiceState.finished;
+                return;
+            }
+            finally
+            {
+                Throughput.EndStage(ThroughputStage.Enumerate, enumerateStart);
+            }
+            UnreadableDirectoryLog.LogNew(_logger, fileEnumerator.UnreadableDirectories, ref unreadableLogged);
             if (!hasNext)
             {
                 break;
             }
-            string currentFile = fileEnumerator.Current;
+            FileEntryInfo currentEntry = fileEnumerator.Current;
+            string currentFile = currentEntry.FullPath;
 
             if (CancelToken.IsCancellationRequested)
             {
@@ -146,7 +176,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             long hashedBytes = 0;
             try
             {
-                hashedBytes = ProcessFile(currentFile, basePath, existingByPath, seenIds, writer);
+                hashedBytes = ProcessFile(currentEntry, basePath, existingByPath, relativeIndex, seenIds, writer);
             }
 #pragma warning disable CA1031 // Do not catch general exception types
             catch (Exception ex)
@@ -163,7 +193,11 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             discThrottle?.Throttle(CancelToken);
         }
 
-        // Anything in the DB under this base path that we did not see on disk is now missing.
+        // Anything in the DB under this base path that we did not see on disk is now missing, except below directories that could not be read:
+        // the enumeration is complete here (the loop ended because MoveNext returned false; a cancel or an error returned before), so the list
+        // of unreadable directories is final. Files below them were not enumerated although they may exist.
+        // (UnreadableDirectories is the live list of the enumeration, final from here on)
+        var unreadableMatcher = new UnreadableDirectoryMatcher(UnreadableDirectories.Select(d => d.Path), basePath);
         foreach (var kvp in existingByPath)
         {
             if (CancelToken.IsCancellationRequested)
@@ -181,6 +215,15 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             }
 
             var dbItem = kvp.Value;
+            bool protectedByUnreadable = CheckJobDTO.IgnoreBasePath
+                ? unreadableMatcher.IsProtectedByAnyBasePath(dbItem.FilenameAndPath, dbItem.PathBase)
+                : unreadableMatcher.IsProtected(dbItem.FilenameAndPath);
+            if (protectedByUnreadable)
+            {
+                UnreadableProtectedCount++;
+                _logger.LogTrace("Check: not reported as missing, below a directory that could not be read: {file}", dbItem.FilenameAndPath);
+                continue;
+            }
             var row = new CheckReportRow
             {
                 Category = CheckCategory.MissingOnDisk,
@@ -198,16 +241,20 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 
         writer.Flush();
         RunnerState = IService.EServiceState.finished;
+        if (UnreadableDirectories.Count > 0)
+        {
+            _logger.LogWarning("Check: {count} directories could not be read completely. {kept} database rows below them were NOT reported as missing (their files were not checked at all). Directories: {directories}", UnreadableDirectories.Count, UnreadableProtectedCount, UnreadableDirectoryLog.Join(UnreadableDirectories));
+        }
         _logger.LogInformation("Check finished. Report={report} {summary}", reportPath, BuildSummary());
         Throughput.LogSummary("Check finished");
     }
 
     /// <returns>The number of bytes that were hashed for this file (0 when it was not hashed or hashing failed).</returns>
-    private long ProcessFile(string currentFile, string basePath, Dictionary<string, ScanItemDto> existingByPath, HashSet<Guid> seenIds, TextWriter writer)
+    private long ProcessFile(FileEntryInfo currentEntry, string basePath, Dictionary<string, ScanItemDto> existingByPath, RelativePathIndex? relativeIndex, HashSet<Guid> seenIds, TextWriter writer)
     {
-        var fileInfo = new FileInfo(currentFile);
-        long fileSize = fileInfo.Length;
-        DateTime fileLastModificationUTC = File.GetLastWriteTimeUtc(currentFile);
+        string currentFile = currentEntry.FullPath;
+        long fileSize = currentEntry.Length;
+        DateTime fileLastModificationUTC = currentEntry.LastWriteTimeUtc;
 
         ScanItemDto? matched = null;
         bool pathMoved = false;
@@ -217,7 +264,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         }
         else if (CheckJobDTO.IgnoreBasePath)
         {
-            matched = FindByRelativePath(currentFile, basePath, existingByPath.Values, seenIds);
+            matched = relativeIndex?.Find(currentFile, seenIds);
             pathMoved = matched is not null;
         }
 
@@ -234,7 +281,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
                 FileSizeDisk = fileSize,
                 MTimeDisk = fileLastModificationUTC,
                 HashDisk = newHash,
-                CreationTimeDisk = File.GetCreationTimeUtc(currentFile),
+                CreationTimeDisk = currentEntry.CreationTimeUtc,
             };
             CheckReportCsv.WriteRow(writer, row);
             NewOnDiskCount++;
@@ -345,44 +392,6 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         return fileSize;
     }
 
-    private static ScanItemDto? FindByRelativePath(string currentFile, string basePath, IEnumerable<ScanItemDto> candidates, HashSet<Guid> seenIds)
-    {
-        var relative = GetRelativePathIfUnderBase(currentFile, basePath);
-        if (relative is null)
-        {
-            return null;
-        }
-        foreach (var candidate in candidates)
-        {
-            // Skip rows already claimed by an exact match in this run.
-            if (seenIds.Contains(candidate.Id))
-            {
-                continue;
-            }
-            // Skip rows that already live under our current BasePath - those would have been caught by the exact-path branch.
-            if (string.Equals(candidate.PathBase, basePath, StringComparison.Ordinal))
-            {
-                continue;
-            }
-            var candidateRelative = GetRelativePathIfUnderBase(candidate.FilenameAndPath, candidate.PathBase);
-            if (!string.Equals(candidateRelative, relative, StringComparison.Ordinal))
-            {
-                continue;
-            }
-            return candidate;
-        }
-        return null;
-    }
-
-    private static string? GetRelativePathIfUnderBase(string path, string basePath)
-    {
-        if (!path.StartsWith(basePath, StringComparison.Ordinal))
-        {
-            return null;
-        }
-        return path.Substring(basePath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-    }
-
     private string? ComputeHashOrNull(string filePath)
     {
         long hashStart = Throughput.StartStage();
@@ -417,8 +426,8 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 
     private string BuildSummary() =>
         string.Format(CultureInfo.InvariantCulture,
-            "BitRot={0} Modified={1} ModifiedNoHashChange={2} Missing={3} New={4} Ok={5} Errors={6}",
-            BitRotSuspectCount, ModifiedCount, ModifiedNoHashChangeCount, MissingOnDiskCount, NewOnDiskCount, OkCount, ErrorCount);
+            "BitRot={0} Modified={1} ModifiedNoHashChange={2} Missing={3} New={4} Ok={5} Errors={6} UnreadableDirectories={7} NotReportedMissingBecauseUnreadable={8}",
+            BitRotSuspectCount, ModifiedCount, ModifiedNoHashChangeCount, MissingOnDiskCount, NewOnDiskCount, OkCount, ErrorCount, UnreadableDirectories.Count, UnreadableProtectedCount);
 
     protected override void Dispose(bool disposing)
     {

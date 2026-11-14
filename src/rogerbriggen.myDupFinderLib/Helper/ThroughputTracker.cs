@@ -12,7 +12,10 @@ namespace RogerBriggen.MyDupFinderLib;
 /// </summary>
 public enum ThroughputStage
 {
-    /// <summary>Walking the file system and reading file attributes.</summary>
+    /// <summary>
+    /// Walking the directories, including the metadata (size, creation and last write time) that the directory listing returns for each file.
+    /// The same in scan, refresh and check: there is no further file system call per file for the metadata.
+    /// </summary>
     Enumerate = 0,
 
     /// <summary>Opening, reading, hashing and closing the files (SHA-512).</summary>
