@@ -26,6 +26,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     {
         RefreshJobDTO = refreshJobDTO;
         ScanJobDBInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
+        Throughput = new ThroughputTracker(_logger);
     }
 
     // To detect redundant calls
@@ -40,22 +41,34 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     public int UnchangedCount { get; private set; }
     public int ErrorCount { get; private set; }
 
+    /// <summary>
+    /// Files, bytes and stage times of the current run. Unchanged files count as files but add no hashed bytes.
+    /// The enumerate time covers the directory listing only.
+    /// </summary>
+    internal ThroughputTracker Throughput { get; private set; }
+
     public override void Start(CancellationToken token)
     {
         base.Start(token);
 
         //Setup DB
         ScanJobDBInserts.SetupDB(RefreshJobDTO.DatabaseFile);
+        _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
+        Throughput = new ThroughputTracker(_logger);
         Refresh();
         ScanJobDBInserts.Dispose();
     }
 
     private void Refresh()
     {
+        //No throttling when ThrottlePercent is 0
+        DiscThrottle? discThrottle = DiscThrottle.CreateForJob(RefreshJobDTO.ThrottlePercent);
         try
         {
             // Step 1: Get all existing items from the database for this base path
+            long loadStart = Throughput.StartStage();
             var existingItems = ScanJobDBInserts.GetAllItemsByBasePath(RefreshJobDTO.BasePath);
+            Throughput.EndStage(ThroughputStage.Database, loadStart);
             var existingByPath = new Dictionary<string, ScanItemDto>(StringComparer.Ordinal);
             foreach (var item in existingItems)
             {
@@ -80,18 +93,30 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 return;
             }
 
-            foreach (string currentFile in files)
+            using var fileEnumerator = files.GetEnumerator();
+            while (true)
             {
+                long enumerateStart = Throughput.StartStage();
+                bool hasNext = fileEnumerator.MoveNext();
+                Throughput.EndStage(ThroughputStage.Enumerate, enumerateStart);
+                if (!hasNext)
+                {
+                    break;
+                }
+                string currentFile = fileEnumerator.Current;
+
                 //CancelToken?
                 if (CancelToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Refresh was cancelled by user... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+                    Throughput.LogSummary("Refresh cancelled");
                     RunnerState = IService.EServiceState.cancelled;
                     return;
                 }
 
                 filesOnDisk.Add(currentFile);
 
+                long hashedBytes = 0;
                 try
                 {
                     var fileInfo = new FileInfo(currentFile);
@@ -104,16 +129,25 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                         if (existingItem.FileSize == fileSize && existingItem.FileLastModificationUTC == fileLastModificationUTC)
                         {
                             // Size and date unchanged - skip hash recalculation, just touch
+                            long dbStart = Throughput.StartStage();
                             ScanJobDBInserts.TouchItem(existingItem, DateTime.UtcNow);
+                            Throughput.EndStage(ThroughputStage.Database, dbStart);
                             UnchangedCount++;
                         }
                         else
                         {
                             // Size or date changed - recalculate hash
                             string newHash = CalcHash(currentFile);
+                            long oldSize = existingItem.FileSize;
+                            long dbStart = Throughput.StartStage();
                             ScanJobDBInserts.UpdateItem(existingItem, fileSize, fileLastModificationUTC, newHash, DateTime.UtcNow);
+                            Throughput.EndStage(ThroughputStage.Database, dbStart);
+                            hashedBytes = fileSize;
                             UpdatedCount++;
-                            _logger.LogInformation("Refresh: Updated {file} (size: {oldSize}->{newSize}, date changed)", currentFile, existingItem.FileSize, fileSize);
+                            if (_logger.IsEnabled(LogLevel.Trace))
+                            {
+                                _logger.LogTrace("Refresh: Updated {file} (size: {oldSize}->{newSize}, date changed)", currentFile, oldSize, fileSize);
+                            }
                         }
                     }
                     else
@@ -137,9 +171,15 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
                         string hash = CalcHash(currentFile);
                         si.FileSha512Hash = hash;
+                        long dbStart = Throughput.StartStage();
                         ScanJobDBInserts.Enqueue(si);
+                        Throughput.EndStage(ThroughputStage.Database, dbStart);
+                        hashedBytes = fileSize;
                         AddedCount++;
-                        _logger.LogInformation("Refresh: Added new file {file}", currentFile);
+                        if (_logger.IsEnabled(LogLevel.Trace))
+                        {
+                            _logger.LogTrace("Refresh: Added new file {file}", currentFile);
+                        }
                     }
                 }
 #pragma warning disable CA1031 // Do not catch general exception types
@@ -150,8 +190,11 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                     ErrorCount++;
                 }
 
-                //Breath...
-                System.Threading.Thread.Sleep(10);
+                Throughput.AddFile(hashedBytes);
+                Throughput.LogProgressIfDue();
+
+                //Throttle
+                discThrottle?.Throttle(CancelToken);
             }
 
             // Step 3: Remove items from DB that no longer exist on disk
@@ -160,6 +203,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 if (CancelToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Refresh was cancelled by user during removal phase... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+                    Throughput.LogSummary("Refresh cancelled");
                     RunnerState = IService.EServiceState.cancelled;
                     return;
                 }
@@ -168,9 +212,14 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 {
                     try
                     {
+                        long dbStart = Throughput.StartStage();
                         ScanJobDBInserts.RemoveItem(kvp.Value);
+                        Throughput.EndStage(ThroughputStage.Database, dbStart);
                         RemovedCount++;
-                        _logger.LogInformation("Refresh: Removed deleted file {file}", kvp.Key);
+                        if (_logger.IsEnabled(LogLevel.Trace))
+                        {
+                            _logger.LogTrace("Refresh: Removed deleted file {file}", kvp.Key);
+                        }
                     }
 #pragma warning disable CA1031 // Do not catch general exception types
                     catch (Exception ex)
@@ -182,9 +231,12 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 }
             }
 
+            long writeStart = Throughput.StartStage();
             ScanJobDBInserts.WriteChanges();
+            Throughput.EndStage(ThroughputStage.Database, writeStart);
             RunnerState = IService.EServiceState.finished;
             _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+            Throughput.LogSummary("Refresh finished");
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (Exception ex)
@@ -196,9 +248,18 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
     private string CalcHash(string filePath)
     {
-        using var sha512 = SHA512.Create();
-        using var stream = File.OpenRead(filePath);
-        return BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
+        // The hash stage covers opening, reading, hashing and closing the file
+        long hashStart = Throughput.StartStage();
+        try
+        {
+            using var sha512 = SHA512.Create();
+            using var stream = File.OpenRead(filePath);
+            return BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
+        }
+        finally
+        {
+            Throughput.EndStage(ThroughputStage.Hash, hashStart);
+        }
     }
 
     // Protected implementation of Dispose pattern.

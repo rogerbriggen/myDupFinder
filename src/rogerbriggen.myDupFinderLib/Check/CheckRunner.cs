@@ -26,6 +26,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     {
         CheckJobDTO = checkJobDTO;
         DbInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
+        Throughput = new ThroughputTracker(_logger);
     }
 
     private bool _disposed;
@@ -41,11 +42,19 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     public int ErrorCount { get; private set; }
     public string? ReportFilePath { get; private set; }
 
+    /// <summary>
+    /// Files, bytes and stage times of the current run. Files that are not hashed (SkipHashCheck) count as files
+    /// but add no hashed bytes. The enumerate time covers the directory listing only, the database time is the initial load of the rows.
+    /// </summary>
+    internal ThroughputTracker Throughput { get; private set; }
+
     public override void Start(CancellationToken token)
     {
         base.Start(token);
 
         DbInserts.SetupDB(CheckJobDTO.ScanJobDTO.DatabaseFile);
+        _logger.LogInformation("Database state: {diagnostics}", DbInserts.GetDatabaseDiagnostics());
+        Throughput = new ThroughputTracker(_logger);
         try
         {
             Check();
@@ -60,10 +69,14 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     {
         var scanJob = CheckJobDTO.ScanJobDTO;
         var basePath = scanJob.BasePath;
+        //No throttling when ThrottlePercent is 0
+        DiscThrottle? discThrottle = DiscThrottle.CreateForJob(scanJob.ThrottlePercent);
 
+        long loadStart = Throughput.StartStage();
         var existingItems = CheckJobDTO.IgnoreBasePath
             ? DbInserts.GetAllItemsByScanIdentity(scanJob.OriginComputer, scanJob.ScanName)
             : DbInserts.GetAllItemsByBasePath(basePath);
+        Throughput.EndStage(ThroughputStage.Database, loadStart);
         var existingByPath = new Dictionary<string, ScanItemDto>(StringComparer.Ordinal);
         foreach (var item in existingItems)
         {
@@ -109,19 +122,31 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             return;
         }
 
-        foreach (string currentFile in files)
+        using var fileEnumerator = files.GetEnumerator();
+        while (true)
         {
+            long enumerateStart = Throughput.StartStage();
+            bool hasNext = fileEnumerator.MoveNext();
+            Throughput.EndStage(ThroughputStage.Enumerate, enumerateStart);
+            if (!hasNext)
+            {
+                break;
+            }
+            string currentFile = fileEnumerator.Current;
+
             if (CancelToken.IsCancellationRequested)
             {
                 writer.Flush();
                 _logger.LogInformation("Check was cancelled by user... {summary}", BuildSummary());
+                Throughput.LogSummary("Check cancelled");
                 RunnerState = IService.EServiceState.cancelled;
                 return;
             }
 
+            long hashedBytes = 0;
             try
             {
-                ProcessFile(currentFile, basePath, existingByPath, seenIds, writer);
+                hashedBytes = ProcessFile(currentFile, basePath, existingByPath, seenIds, writer);
             }
 #pragma warning disable CA1031 // Do not catch general exception types
             catch (Exception ex)
@@ -131,8 +156,11 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
                 ErrorCount++;
             }
 
-            // Breath...
-            Thread.Sleep(10);
+            Throughput.AddFile(hashedBytes);
+            Throughput.LogProgressIfDue();
+
+            // Throttle
+            discThrottle?.Throttle(CancelToken);
         }
 
         // Anything in the DB under this base path that we did not see on disk is now missing.
@@ -142,6 +170,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             {
                 writer.Flush();
                 _logger.LogInformation("Check was cancelled by user during missing-detection... {summary}", BuildSummary());
+                Throughput.LogSummary("Check cancelled");
                 RunnerState = IService.EServiceState.cancelled;
                 return;
             }
@@ -164,15 +193,17 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             };
             CheckReportCsv.WriteRow(writer, row);
             MissingOnDiskCount++;
-            _logger.LogInformation("Check: MissingOnDisk {file}", dbItem.FilenameAndPath);
+            _logger.LogTrace("Check: MissingOnDisk {file}", dbItem.FilenameAndPath);
         }
 
         writer.Flush();
         RunnerState = IService.EServiceState.finished;
         _logger.LogInformation("Check finished. Report={report} {summary}", reportPath, BuildSummary());
+        Throughput.LogSummary("Check finished");
     }
 
-    private void ProcessFile(string currentFile, string basePath, Dictionary<string, ScanItemDto> existingByPath, HashSet<Guid> seenIds, TextWriter writer)
+    /// <returns>The number of bytes that were hashed for this file (0 when it was not hashed or hashing failed).</returns>
+    private long ProcessFile(string currentFile, string basePath, Dictionary<string, ScanItemDto> existingByPath, HashSet<Guid> seenIds, TextWriter writer)
     {
         var fileInfo = new FileInfo(currentFile);
         long fileSize = fileInfo.Length;
@@ -207,8 +238,8 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             };
             CheckReportCsv.WriteRow(writer, row);
             NewOnDiskCount++;
-            _logger.LogInformation("Check: NewOnDisk {file}", currentFile);
-            return;
+            _logger.LogTrace("Check: NewOnDisk {file}", currentFile);
+            return newHash is null ? 0 : fileSize;
         }
 
         seenIds.Add(matched.Id);
@@ -220,7 +251,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             if (!sizeOrMtimeChanged && !pathMoved)
             {
                 OkCount++;
-                return;
+                return 0;
             }
 
             // Treat as Modified-like; hash is unknown so leave HashDisk null. applyCheck will then
@@ -250,14 +281,14 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             {
                 ModifiedNoHashChangeCount++;
             }
-            return;
+            return 0;
         }
 
         string? diskHash = ComputeHashOrNull(currentFile);
         if (diskHash is null)
         {
             ErrorCount++;
-            return;
+            return 0;
         }
 
         bool hashDiffers = !string.Equals(diskHash, matched.FileSha512Hash, StringComparison.OrdinalIgnoreCase);
@@ -267,13 +298,13 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         {
             category = CheckCategory.Modified;
             ModifiedCount++;
-            _logger.LogInformation("Check: Modified {file}", currentFile);
+            _logger.LogTrace("Check: Modified {file}", currentFile);
         }
         else if (sizeOrMtimeChanged && !hashDiffers)
         {
             category = CheckCategory.ModifiedNoHashChange;
             ModifiedNoHashChangeCount++;
-            _logger.LogInformation("Check: ModifiedNoHashChange {file}", currentFile);
+            _logger.LogTrace("Check: ModifiedNoHashChange {file}", currentFile);
         }
         else if (!sizeOrMtimeChanged && hashDiffers)
         {
@@ -286,12 +317,12 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             // Size, mtime and hash all match - only the location moved. Report so applyCheck can rewrite PathBase.
             category = CheckCategory.ModifiedNoHashChange;
             ModifiedNoHashChangeCount++;
-            _logger.LogInformation("Check: PathMoved (no content change) {file}", currentFile);
+            _logger.LogTrace("Check: PathMoved (no content change) {file}", currentFile);
         }
         else
         {
             OkCount++;
-            return;
+            return fileSize;
         }
 
         var fullRow = new CheckReportRow
@@ -311,6 +342,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             HashDisk = diskHash,
         };
         CheckReportCsv.WriteRow(writer, fullRow);
+        return fileSize;
     }
 
     private static ScanItemDto? FindByRelativePath(string currentFile, string basePath, IEnumerable<ScanItemDto> candidates, HashSet<Guid> seenIds)
@@ -353,6 +385,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 
     private string? ComputeHashOrNull(string filePath)
     {
+        long hashStart = Throughput.StartStage();
         try
         {
             using var sha512 = SHA512.Create();
@@ -365,6 +398,10 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         {
             _logger.LogError(ex, "Check: Failed to hash {file}", filePath);
             return null;
+        }
+        finally
+        {
+            Throughput.EndStage(ThroughputStage.Hash, hashStart);
         }
     }
 

@@ -3,6 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data;
+using System.Data.Common;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
@@ -42,6 +45,57 @@ public class ScanJobDBInserts : IDisposable
             TotalErrorCount = 0;
         }
 
+    }
+
+    /// <summary>
+    /// Reads journal mode, synchronous setting and the indexes of the ScanItems table. Changes nothing.
+    /// </summary>
+    public DatabaseDiagnostics GetDatabaseDiagnostics()
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetDatabaseDiagnostics called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            var connection = _dbContext.Database.GetDbConnection();
+            bool wasClosed = connection.State != ConnectionState.Open;
+            if (wasClosed)
+            {
+                connection.Open();
+            }
+            try
+            {
+                string journalMode = Convert.ToString(ExecuteScalar(connection, "PRAGMA journal_mode;"), CultureInfo.InvariantCulture) ?? string.Empty;
+                long synchronous = Convert.ToInt64(ExecuteScalar(connection, "PRAGMA synchronous;"), CultureInfo.InvariantCulture);
+
+                var indexes = new List<string>();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ScanItems' ORDER BY name;";
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        indexes.Add(reader.GetString(0));
+                    }
+                }
+                return new DatabaseDiagnostics(journalMode, synchronous, indexes);
+            }
+            finally
+            {
+                if (wasClosed)
+                {
+                    connection.Close();
+                }
+            }
+        }
+    }
+
+    private static object? ExecuteScalar(DbConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return command.ExecuteScalar();
     }
 
     public void Enqueue(ScanItemDto si)

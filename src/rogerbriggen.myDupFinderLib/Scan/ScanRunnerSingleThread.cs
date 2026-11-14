@@ -23,6 +23,7 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
     {
         ScanJobDTO = scanJobDTO;
         ScanJobDBInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
+        Throughput = new ThroughputTracker(_logger);
     }
 
     // To detect redundant calls
@@ -35,12 +36,19 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
 
     private IEnumerateFilesToIndex? _enumerateFiles;
 
+    /// <summary>
+    /// Files, bytes and stage times of the current run.
+    /// </summary>
+    internal ThroughputTracker Throughput { get; private set; }
+
     public override void Start(CancellationToken token)
     {
         base.Start(token);
 
         //Setup DB
         ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile);
+        _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
+        Throughput = new ThroughputTracker(_logger);
         _enumerateFiles = new EnumerateFilesFromDiscToIndex(ScanJobDTO, _serviceProvider.GetService<ILogger<EnumerateFilesFromDiscToIndex>>());
         Scan();
         ScanJobDBInserts.Dispose();
@@ -48,7 +56,8 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
 
     private void Scan()
     {
-        DiscThrottle discThrottle = new DiscThrottle(10, TimeSpan.FromMinutes(5).TotalMilliseconds);
+        //No throttling when ThrottlePercent is 0
+        DiscThrottle? discThrottle = DiscThrottle.CreateForJob(ScanJobDTO.ThrottlePercent);
         bool bFinish = false;
         //Don't filter if db is empty...
         bool bFilter = !ScanJobDBInserts.IsEmptyScanItemTable();
@@ -64,14 +73,15 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
                 //CancelToken?
                 if (CancelToken.IsCancellationRequested)
                 {
-                    ScanJobDBInserts.WriteChanges();
+                    WriteChanges();
                     _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                    Throughput.LogSummary("Scanning cancelled");
                     RunnerState = IService.EServiceState.cancelled;
                     return;
                 }
 
                 //Throttle
-                discThrottle.Throttle(CancelToken);
+                discThrottle?.Throttle(CancelToken);
 
                 //Enumerate
                 if (!(_enumerateFiles?.HasMore == true))
@@ -79,7 +89,9 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
                     bFinish = true;
                     continue;
                 }
+                long enumerateStart = Throughput.StartStage();
                 _enumerateFiles.EnumerateFiles();
+                Throughput.EndStage(ThroughputStage.Enumerate, enumerateStart);
 
 
 
@@ -96,35 +108,43 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
                     //Filter
                     if (bFilter)
                     {
-                        if (ScanJobDBInserts.IsAlreadyInDB(si))
+                        long filterStart = Throughput.StartStage();
+                        bool alreadyInDB = ScanJobDBInserts.IsAlreadyInDB(si);
+                        Throughput.EndStage(ThroughputStage.Database, filterStart);
+                        if (alreadyInDB)
                         {
+                            Throughput.AddFile();
+                            Throughput.LogProgressIfDue();
                             continue;
                         }
                     }
 
                     //Calc hash
                     CalcHash(si);
+                    Throughput.LogProgressIfDue();
 
                     //CancelToken?
                     if (CancelToken.IsCancellationRequested)
                     {
-                        ScanJobDBInserts.WriteChanges();
+                        WriteChanges();
                         _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                        Throughput.LogSummary("Scanning cancelled");
                         RunnerState = IService.EServiceState.cancelled;
                         return;
                     }
 
-                    //Breath...
-                    System.Threading.Thread.Sleep(10);
-
                     //Throttle
-                    discThrottle.Throttle(CancelToken);
+                    discThrottle?.Throttle(CancelToken);
                 }
-                _logger.LogDebug($"Scanning... FileEnumeration currentCount={_enumerateFiles.CurrentCount}  errorCount={_enumerateFiles.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                if (_logger.IsEnabled(LogLevel.Trace))
+                {
+                    _logger.LogTrace($"Scanning... FileEnumeration currentCount={_enumerateFiles.CurrentCount}  errorCount={_enumerateFiles.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                }
             }
-            ScanJobDBInserts.WriteChanges();
+            WriteChanges();
             RunnerState = IService.EServiceState.finished;
             _logger.LogInformation($"Scanning finished... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+            Throughput.LogSummary("Scanning finished");
         }
         catch (Exception ex)
         {
@@ -133,27 +153,57 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
     }
 
 
+    private void WriteChanges()
+    {
+        long start = Throughput.StartStage();
+        ScanJobDBInserts.WriteChanges();
+        Throughput.EndStage(ThroughputStage.Database, start);
+    }
+
     private void CalcHash(ScanItemDto item)
     {
+        long hashedBytes = 0;
         try
         {
-            using (var sha512 = SHA512.Create())
+            // The hash stage covers opening, reading, hashing and closing the file
+            long hashStart = Throughput.StartStage();
+            try
             {
-                using (var stream = File.OpenRead(item.FilenameAndPath))
-                {
-                    item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
-                    ScanJobDBInserts.Enqueue(item);
-                    _logger.LogInformation("File {file} successfull finished", item.FilenameAndPath);
-                }
+                using var sha512 = SHA512.Create();
+                using var stream = File.OpenRead(item.FilenameAndPath);
+                item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
+            }
+            finally
+            {
+                Throughput.EndStage(ThroughputStage.Hash, hashStart);
+            }
+            hashedBytes = item.FileSize;
+
+            long dbStart = Throughput.StartStage();
+            try
+            {
+                ScanJobDBInserts.Enqueue(item);
+            }
+            finally
+            {
+                Throughput.EndStage(ThroughputStage.Database, dbStart);
+            }
+            if (_logger.IsEnabled(LogLevel.Trace))
+            {
+                _logger.LogTrace("File {file} successfull finished", item.FilenameAndPath);
             }
         }
 #pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen
         catch (Exception e)
 #pragma warning restore CA1031 // Keine allgemeinen Ausnahmetypen abfangen
         {
+            hashedBytes = 0;
+            long errorDbStart = Throughput.StartStage();
             ScanJobDBInserts.Enqueue(new ScanErrorItemDto(item, e, _runStarted));
+            Throughput.EndStage(ThroughputStage.Database, errorDbStart);
             _logger.LogError(e, "Hashing of {file} failed.", item.FilenameAndPath);
         }
+        Throughput.AddFile(hashedBytes);
     }
 
 

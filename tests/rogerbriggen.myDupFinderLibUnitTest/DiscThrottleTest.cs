@@ -67,6 +67,38 @@ public class DiscThrottleTest
     }
 
     [Fact]
+    public void ZeroPercentThrottle_ReturnsImmediately_EvenWithManyCallsAndACancelledToken()
+    {
+        DiscThrottle disc = new DiscThrottle(0, 0);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        disc.Throttle(cts.Token); // would start the timer of a real throttle
+        Thread.Sleep(20);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < 1000; i++)
+        {
+            disc.Throttle(cts.Token);
+        }
+        stopwatch.Stop();
+
+        // 1000 calls that each sleep (even Sleep(1) is about 15 ms on Windows) would take many seconds
+        Assert.InRange(stopwatch.ElapsedMilliseconds, 0, 500);
+    }
+
+    [Fact]
+    public void CreateForJob_ZeroPercent_ReturnsNull()
+    {
+        Assert.Null(DiscThrottle.CreateForJob(0));
+    }
+
+    [Fact]
+    public void CreateForJob_PositivePercent_ReturnsThrottle()
+    {
+        Assert.NotNull(DiscThrottle.CreateForJob(10));
+    }
+
+    [Fact]
     public void ThrottlePercentCappedAt70_NoException()
     {
         // Passing a value > 70 should be capped to 70 (no exception thrown)

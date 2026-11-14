@@ -17,6 +17,16 @@ public class MyDupFinderScanJobDTO
 
     public string ReportPath { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Share of the working time the job spends sleeping to spare the disk (0 - 70).
+    /// 0 (the default, also used when the element is missing in the project file) means no throttling.
+    /// </summary>
+    public uint ThrottlePercent { get; set; }
+
+    /// <summary>
+    /// Highest accepted value for <see cref="ThrottlePercent"/>.
+    /// </summary>
+    public const uint MaxThrottlePercent = 70;
 
     public static void CheckSanity(MyDupFinderScanJobDTO dto)
     {
@@ -40,6 +50,12 @@ public class MyDupFinderScanJobDTO
         if (string.IsNullOrWhiteSpace(dto.DatabaseFile))
         {
             throw new ParameterException("Param DatabaseFile may not be null or empty");
+        }
+
+        //Rule: ThrottlePercent must be 0 - 70
+        if (dto.ThrottlePercent > MaxThrottlePercent)
+        {
+            throw new ParameterException($"Param ThrottlePercent must be between 0 and {MaxThrottlePercent}! {dto.ThrottlePercent}");
         }
 
         //Rule: BasePath must exist
