@@ -65,6 +65,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.Enqueue(CreateScanItem("/other/path/file3.txt", "/other/path/", "HASH_C", 300, DateTime.UtcNow));
 
         // Act
+        dbInserts.WriteChanges();
         var result = dbInserts.GetAllItemsByBasePath(basePath);
 
         // Assert
@@ -81,6 +82,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.Enqueue(CreateScanItem("/other/file.txt", "/other/", "HASH_A", 100, DateTime.UtcNow));
 
         // Act
+        dbInserts.WriteChanges();
         var result = dbInserts.GetAllItemsByBasePath("/nonexistent/");
 
         // Assert
@@ -106,6 +108,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.Enqueue(CreateScanItem("/test/base/file1.txt", basePath, "OLD_HASH", 100, originalDate));
 
         // Get the item back from the DB
+        dbInserts.WriteChanges();
         var items = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Single(items);
         var existingItem = items[0];
@@ -115,6 +118,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.UpdateItem(existingItem, 200, newDate, "NEW_HASH", scanDate);
 
         // Assert - re-read from DB
+        dbInserts.WriteChanges();
         var updatedItems = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Single(updatedItems);
         Assert.Equal(200, updatedItems[0].FileSize);
@@ -143,6 +147,7 @@ public class RefreshDatabaseTest : IDisposable
         item.LastScanDateUTC = originalScanDate;
         dbInserts.Enqueue(item);
 
+        dbInserts.WriteChanges();
         var items = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Single(items);
         var existingItem = items[0];
@@ -152,6 +157,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.TouchItem(existingItem, newScanDate);
 
         // Assert
+        dbInserts.WriteChanges();
         var touchedItems = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Single(touchedItems);
         Assert.Equal(newScanDate, touchedItems[0].LastScanDateUTC);
@@ -177,6 +183,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.Enqueue(CreateScanItem("/test/base/file1.txt", basePath, "HASH_A", 100, DateTime.UtcNow));
         dbInserts.Enqueue(CreateScanItem("/test/base/file2.txt", basePath, "HASH_B", 200, DateTime.UtcNow));
 
+        dbInserts.WriteChanges();
         var items = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Equal(2, items.Count);
 
@@ -185,6 +192,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.RemoveItem(itemToRemove);
 
         // Assert
+        dbInserts.WriteChanges();
         var remainingItems = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Single(remainingItems);
         Assert.Equal("/test/base/file2.txt", remainingItems[0].FilenameAndPath);
@@ -216,6 +224,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.Enqueue(CreateScanItem("/test/base/file3.txt", basePath, "HASH_3", 300, originalDate));
 
         // Verify initial state
+        dbInserts.WriteChanges();
         var initialItems = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Equal(3, initialItems.Count);
 
@@ -237,6 +246,7 @@ public class RefreshDatabaseTest : IDisposable
         dbInserts.Enqueue(CreateScanItem("/test/base/file4.txt", basePath, "HASH_4", 400, DateTime.UtcNow));
 
         // Verify final state
+        dbInserts.WriteChanges();
         var finalItems = dbInserts.GetAllItemsByBasePath(basePath);
         Assert.Equal(3, finalItems.Count);
 

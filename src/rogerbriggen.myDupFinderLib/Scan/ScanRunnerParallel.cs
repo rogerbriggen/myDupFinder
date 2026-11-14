@@ -70,6 +70,12 @@ internal class ScanRunnerParallel : BasicRunner<ScanRunnerParallel>, IScanRunner
                                                       }
                                                   }
 #pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen
+                                                      catch (BatchWriteException ex)
+                                                      {
+                                                          // Fatal: stop hashing, the database cannot be written
+                                                          _logger.LogError(ex, "Database write failure, stopping the scan. {PendingCount} operations could not be written.", ex.PendingOperationCount);
+                                                          loopState.Stop();
+                                                      }
                                                       catch (Exception e)
 #pragma warning restore CA1031 // Keine allgemeinen Ausnahmetypen abfangen
                                                       {
@@ -78,6 +84,15 @@ internal class ScanRunnerParallel : BasicRunner<ScanRunnerParallel>, IScanRunner
                                                   }
 
                                               });
+                                              try
+                                              {
+                                                  ScanJobDBInserts.WriteChanges();
+                                              }
+                                              catch (BatchWriteException ex)
+                                              {
+                                                  _logger.LogError(ex, "Database write failure at the end of the scan. {PendingCount} operations could not be written.", ex.PendingOperationCount);
+                                                  return;
+                                              }
                                               _logger.LogInformation("Finished hashing files. Successfully hashed files: {successfullCount}, failed: {failedCount}, Queue: {QueueCount}", ScanJobDBInserts.TotalSuccessCount, ScanJobDBInserts.TotalErrorCount, _scanItemCollection.Count);
                                               RunnerState = IService.EServiceState.finished;
                                           });

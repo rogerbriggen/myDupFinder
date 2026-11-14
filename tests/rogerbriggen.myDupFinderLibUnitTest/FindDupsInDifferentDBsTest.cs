@@ -43,6 +43,7 @@ public class FindDupsInDifferentDBsTest : IDisposable
         {
             dbInserts.Enqueue(item);
         }
+        dbInserts.WriteChanges();
     }
 
     private static ScanItemDto CreateScanItem(string path, string hash, long fileSize)

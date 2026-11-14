@@ -49,6 +49,7 @@ public class FindDupsWholeLotTest : IDisposable
         {
             dbInserts.Enqueue(item);
         }
+        dbInserts.WriteChanges();
     }
 
     private static ScanItemDto Item(string fullPath, string hash, long size)
