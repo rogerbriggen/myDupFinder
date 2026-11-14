@@ -35,7 +35,20 @@ public class ScanJobDBInserts : IDisposable
         Remove,
     }
 
-    private readonly record struct PendingOperation(PendingKind Kind, ScanItemDto? Item, ScanErrorItemDto? ErrorItem);
+    /// <summary>
+    /// One queued write. Inserts keep the object (EF assigns the Id to it). Touch, Update and Remove carry only immutable
+    /// values that were captured when the operation was queued, never a reference to the caller's object.
+    /// </summary>
+    private readonly record struct PendingOperation(
+        PendingKind Kind,
+        ScanItemDto? Item = null,
+        ScanErrorItemDto? ErrorItem = null,
+        Guid Id = default,
+        long FileSize = 0,
+        DateTime FileLastModificationUTC = default,
+        string? FileSha512Hash = null,
+        DateTime LastScanDateUTC = default,
+        DateTime LastSha512ScanDateUTC = default);
 
     // All operations that are not yet committed, in the order they were added
     private readonly List<PendingOperation> _pending = new List<PendingOperation>();
@@ -164,20 +177,22 @@ public class ScanJobDBInserts : IDisposable
 
     /// <summary>
     /// Adds a scan item to the pending operations. It reaches the database with the next flush.
+    /// The object is kept by reference (EF assigns the Id to it when it is inserted), so it must not be changed after it was queued.
     /// Throws <see cref="BatchWriteException"/> if this call triggered a flush that failed.
     /// </summary>
     public void Enqueue(ScanItemDto si)
     {
-        AddPending(new PendingOperation(PendingKind.InsertItem, si, null), nameof(Enqueue));
+        AddPending(new PendingOperation(PendingKind.InsertItem, Item: si), nameof(Enqueue));
     }
 
     /// <summary>
     /// Adds a scan error item to the pending operations. It reaches the database with the next flush.
+    /// The object is kept by reference (EF assigns the Id to it when it is inserted), so it must not be changed after it was queued.
     /// Throws <see cref="BatchWriteException"/> if this call triggered a flush that failed.
     /// </summary>
     public void Enqueue(ScanErrorItemDto sei)
     {
-        AddPending(new PendingOperation(PendingKind.InsertError, null, sei), nameof(Enqueue));
+        AddPending(new PendingOperation(PendingKind.InsertError, ErrorItem: sei), nameof(Enqueue));
     }
 
     private void AddPending(PendingOperation operation, string callerName)
@@ -239,16 +254,16 @@ public class ScanJobDBInserts : IDisposable
                             errorCount++;
                             break;
                         case PendingKind.Touch:
-                            ApplyModification(op.Item!, false, trackedById, removedIds);
+                            ApplyModification(op, false, trackedById, removedIds);
                             break;
                         case PendingKind.Update:
-                            if (ApplyModification(op.Item!, true, trackedById, removedIds))
+                            if (ApplyModification(op, true, trackedById, removedIds))
                             {
                                 successCount++;
                             }
                             break;
                         case PendingKind.Remove:
-                            ApplyRemove(op.Item!, trackedById, removedIds);
+                            ApplyRemove(op.Id, trackedById, removedIds);
                             break;
                         default:
                             throw new InvalidOperationException($"Unknown pending operation {op.Kind}");
@@ -292,46 +307,41 @@ public class ScanJobDBInserts : IDisposable
     }
 
     /// <summary>
-    /// Applies a touch (only LastScanDateUTC) or an update (the five update columns) to the change tracker.
-    /// An entity is attached only if its key is not tracked yet; otherwise only the modified flags are added to the
-    /// tracked entry (an entity that is Added stays Added). If a different object with the same key is already
-    /// tracked, the written values of the given object are copied onto the tracked one, so the later operation wins
-    /// for the columns it writes and the columns only written earlier are kept.
+    /// Applies a touch (only LastScanDateUTC) or an update (the five update columns) from the values captured in the
+    /// operation. One entity is tracked per primary key: if the key is already tracked in this batch (for example because
+    /// the row was inserted earlier in the batch), the values are set on that entity and the modified flags are added
+    /// (an entity that is Added stays Added and simply gets the values). Otherwise a stub entity that carries only the Id
+    /// is attached (state Unchanged), the values are set on it and exactly those properties are flagged as modified, so
+    /// EF writes only these columns and never the default values of the other properties.
+    /// The change detection is off, so the flags are set explicitly.
     /// Must be called with the lock held. Returns false if the operation was ignored because the row is removed in this batch.
     /// </summary>
-    private bool ApplyModification(ScanItemDto item, bool fullUpdate, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    private bool ApplyModification(PendingOperation op, bool fullUpdate, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
     {
-        if (removedIds.Contains(item.Id))
+        if (removedIds.Contains(op.Id))
         {
             return false;
         }
-        ScanItemDto target;
-        if (trackedById.TryGetValue(item.Id, out var tracked))
+        if (!trackedById.TryGetValue(op.Id, out var target))
         {
-            target = tracked;
-            if (!ReferenceEquals(tracked, item))
-            {
-                tracked.LastScanDateUTC = item.LastScanDateUTC;
-                if (fullUpdate)
-                {
-                    tracked.FileSize = item.FileSize;
-                    tracked.FileLastModificationUTC = item.FileLastModificationUTC;
-                    tracked.FileSha512Hash = item.FileSha512Hash;
-                    tracked.LastSha512ScanDateUTC = item.LastSha512ScanDateUTC;
-                }
-            }
+            target = new ScanItemDto { Id = op.Id };
+            _dbContext!.Attach(target);
+            trackedById[op.Id] = target;
         }
-        else
+
+        target.LastScanDateUTC = op.LastScanDateUTC;
+        if (fullUpdate)
         {
-            target = item;
-            _dbContext!.Attach(item);
-            trackedById[item.Id] = item;
+            target.FileSize = op.FileSize;
+            target.FileLastModificationUTC = op.FileLastModificationUTC;
+            target.FileSha512Hash = op.FileSha512Hash!;
+            target.LastSha512ScanDateUTC = op.LastSha512ScanDateUTC;
         }
 
         var entry = _dbContext!.Entry(target);
         if (entry.State == EntityState.Added)
         {
-            // The row is inserted with the current values of the object, nothing to flag
+            // The row is inserted with the current values of the entity, nothing to flag
             return true;
         }
         entry.Property(i => i.LastScanDateUTC).IsModified = true;
@@ -346,25 +356,23 @@ public class ScanJobDBInserts : IDisposable
     }
 
     /// <summary>
-    /// Applies a remove to the change tracker. Works on whatever instance is tracked for the key; operations
-    /// on the key that come later in the same batch are ignored. Must be called with the lock held.
+    /// Applies a remove by primary key. Works on whatever entity is tracked for the key, otherwise on a stub entity
+    /// that carries only the Id; operations on the key that come later in the same batch are ignored.
+    /// Must be called with the lock held.
     /// </summary>
-    private void ApplyRemove(ScanItemDto item, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    private void ApplyRemove(Guid id, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
     {
-        if (!removedIds.Add(item.Id))
+        if (!removedIds.Add(id))
         {
             return;
         }
-        if (trackedById.TryGetValue(item.Id, out var tracked))
+        if (!trackedById.TryGetValue(id, out var target))
         {
-            // Removing an entity that is Added drops it again: nothing is inserted
-            _dbContext!.Remove(tracked);
+            target = new ScanItemDto { Id = id };
+            _dbContext!.Attach(target);
         }
-        else
-        {
-            _dbContext!.Attach(item);
-            _dbContext.Remove(item);
-        }
+        // Removing an entity that is Added drops it again: nothing is inserted
+        _dbContext!.Remove(target);
     }
 
     public bool IsEmptyScanItemTable()
@@ -491,7 +499,7 @@ public class ScanJobDBInserts : IDisposable
     /// Updates an existing scan item in the database (queued, written with the next flush).
     /// Used by refresh when file size or modification date has changed and the hash needs recalculation.
     /// Only FileSize, FileLastModificationUTC, FileSha512Hash, LastScanDateUTC and LastSha512ScanDateUTC are written.
-    /// The given object is changed immediately.
+    /// The given object is changed immediately; what is written is captured now, so later changes of the object do not change it.
     /// Several operations on the same row in one batch are applied in the order they were added (the later value wins per column).
     /// If the row is removed earlier in the same batch (<see cref="RemoveItem"/>), this operation is ignored and does not count as success.
     /// </summary>
@@ -509,14 +517,14 @@ public class ScanJobDBInserts : IDisposable
             existingItem.FileSha512Hash = newFileSha512Hash;
             existingItem.LastScanDateUTC = scanDateUTC;
             existingItem.LastSha512ScanDateUTC = scanDateUTC;
-            AddPending(new PendingOperation(PendingKind.Update, existingItem, null), nameof(UpdateItem));
+            AddPending(new PendingOperation(PendingKind.Update, Id: existingItem.Id, FileSize: newFileSize, FileLastModificationUTC: newFileLastModificationUTC, FileSha512Hash: newFileSha512Hash, LastScanDateUTC: scanDateUTC, LastSha512ScanDateUTC: scanDateUTC), nameof(UpdateItem));
         }
     }
 
     /// <summary>
     /// Updates the LastScanDateUTC of an existing scan item without recalculating the hash (queued, written with the next flush).
     /// Used by refresh when file size and date are unchanged (the file has not changed). Only LastScanDateUTC is written.
-    /// The given object is changed immediately.
+    /// The given object is changed immediately; what is written is captured now, so later changes of the object do not change it.
     /// Several operations on the same row in one batch are applied in the order they were added.
     /// If the row is removed earlier in the same batch (<see cref="RemoveItem"/>), this operation is ignored.
     /// </summary>
@@ -530,7 +538,7 @@ public class ScanJobDBInserts : IDisposable
         lock (dbContextLock)
         {
             existingItem.LastScanDateUTC = scanDateUTC;
-            AddPending(new PendingOperation(PendingKind.Touch, existingItem, null), nameof(TouchItem));
+            AddPending(new PendingOperation(PendingKind.Touch, Id: existingItem.Id, LastScanDateUTC: scanDateUTC), nameof(TouchItem));
         }
     }
 
@@ -548,7 +556,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
-            AddPending(new PendingOperation(PendingKind.Remove, item, null), nameof(RemoveItem));
+            AddPending(new PendingOperation(PendingKind.Remove, Id: item.Id), nameof(RemoveItem));
         }
     }
 

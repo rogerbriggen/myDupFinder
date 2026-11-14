@@ -674,4 +674,143 @@ public class ScanJobDBInsertsBatchTest : IDisposable
         Assert.Equal("HASH_X", row.FileSha512Hash);
         Assert.Equal(10, row.FileSize);
     }
+
+    // ---- Values are captured when the operation is queued ----
+
+    private static readonly DateTime Date3 = new DateTime(2024, 4, 4, 0, 0, 0, DateTimeKind.Utc);
+
+    [Fact]
+    public void Snapshot_UpdateWithTwoInstancesOfTheSameKey_LastUpdateWins()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var b = ReadRow(a.Id);
+
+        db.UpdateItem(a, 111, Modification, "H1", Date1);
+        db.UpdateItem(b, 222, Modification, "H2", Date2);
+        db.UpdateItem(a, 333, Modification, "H3", Date3);
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 333, "H3", Date3, Date3);
+        Assert.Equal(2 + 3, db.TotalSuccessCount);
+    }
+
+    [Fact]
+    public void Snapshot_TouchWithTwoInstancesOfTheSameKey_LastTouchWins()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var b = ReadRow(a.Id);
+
+        db.TouchItem(a, Date1);
+        db.TouchItem(b, Date2);
+        db.TouchItem(a, Date3);
+        db.WriteChanges();
+
+        AssertTouchOnly(ReadRow(a.Id), Date3);
+    }
+
+    [Fact]
+    public void Snapshot_UpdateThenDirectChangeOfTheObject_WritesTheValuesOfTheCall()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date1);
+        a.FileSize = 5;
+        a.FileSha512Hash = "DIRECT";
+        a.FileLastModificationUTC = Date3;
+        a.LastScanDateUTC = Date3;
+        a.LastSha512ScanDateUTC = Date3;
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 222, "NEW_HASH", Date1, Date1);
+    }
+
+    [Fact]
+    public void Snapshot_TouchThenDirectChangeOfTheObject_WritesTheDateOfTheCall()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.TouchItem(a, Date1);
+        a.LastScanDateUTC = Date3;
+        db.WriteChanges();
+
+        AssertTouchOnly(ReadRow(a.Id), Date1);
+    }
+
+    [Fact]
+    public void Snapshot_Update_DoesNotBlankOtherColumns()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var creation = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date1);
+        db.WriteChanges();
+
+        var row = ReadRow(a.Id);
+        Assert.Equal(BasePath + "a", row.FilenameAndPath);
+        Assert.Equal("a", row.Filename);
+        Assert.Equal("/other/", row.PathBase);
+        Assert.Equal("CHANGED_BY_OTHER", row.ScanName);
+        Assert.Equal("TestPC", row.OriginComputer);
+        Assert.Equal("TestPC", row.ScanExecutionComputer);
+        Assert.Equal(creation, row.FileCreationUTC);
+        Assert.Equal(creation, row.FirstScanDateUTC);
+    }
+
+    [Fact]
+    public void Snapshot_FailedBatchThenRetry_WritesTheUpdateExactlyOnce()
+    {
+        var (db, a, b) = SeedAndLoadTwo();
+        using var _ = db;
+        // An insert with the key of an existing row makes the batch fail
+        var duplicateKey = CreateItem("duplicate");
+        duplicateKey.Id = b.Id;
+
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date1);
+        db.Enqueue(duplicateKey);
+        var ex = Assert.Throws<BatchWriteException>(() => db.WriteChanges());
+
+        Assert.Equal(2, ex.PendingOperationCount);
+        Assert.Equal(2, db.PendingCount);
+        Assert.Equal(2, db.TotalSuccessCount);
+        Assert.Equal(0, db.TrackedEntityCount);
+        Assert.Equal(999, ReadRow(a.Id).FileSize);
+
+        // The caller changes the object after the failure: the queued snapshot must not change
+        a.FileSize = 5;
+        // Remove the cause: the row that blocks the insert is deleted directly
+        using (var other = OpenContext())
+        {
+            other.ScanItems!.Where(i => i.Id == b.Id).ExecuteDelete();
+        }
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 222, "NEW_HASH", Date1, Date1);
+        Assert.Equal(BasePath + "duplicate", ReadRow(b.Id).FilenameAndPath);
+        Assert.Equal(0, db.PendingCount);
+        // The update and the insert count once each
+        Assert.Equal(2 + 2, db.TotalSuccessCount);
+        Assert.Equal(0, db.TrackedEntityCount);
+    }
+
+    [Fact]
+    public void Snapshot_RemoveOfLoadedRow_DeletesByKey()
+    {
+        var (db, a, b) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.RemoveItem(a);
+        db.WriteChanges();
+
+        Assert.Equal(1, CommittedItemCount());
+        using var check = OpenContext();
+        var remaining = check.ScanItems!.AsNoTracking().ToList();
+        Assert.DoesNotContain(remaining, i => i.Id == a.Id);
+        Assert.Contains(remaining, i => i.Id == b.Id);
+        Assert.Equal(0, db.TrackedEntityCount);
+    }
 }
