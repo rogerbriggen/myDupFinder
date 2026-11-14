@@ -1,0 +1,60 @@
+{
+  "name": "myDupFinder (.NET 11)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/dotnet:2": {
+      "version": "11.0"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  "overrideFeatureInstallOrder": [
+    "ghcr.io/devcontainers/features/node",
+    "ghcr.io/anthropics/devcontainer-features/claude-code"
+  ],
+
+  "remoteUser": "vscode",
+
+  "mounts": [
+    "source=claude-code-config,target=/home/vscode/.claude,type=volume",
+    "source=codex-config,target=/home/vscode/.codex,type=volume",
+    "source=gh-cli-config,target=/home/vscode/.config/gh,type=volume",
+    "source=nuget-packages,target=/home/vscode/.nuget/packages,type=volume",
+    "source=mydupfinder-artifacts-${devcontainerId},target=/home/vscode/.cache/mydupfinder/artifacts,type=volume"
+  ],
+
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
+    "CODEX_HOME": "/home/vscode/.codex",
+    "NUGET_PACKAGES": "/home/vscode/.nuget/packages",
+    "UseArtifactsOutput": "true",
+    "ArtifactsPath": "/home/vscode/.cache/mydupfinder/artifacts",
+    "EnableWindowsTargeting": "true"
+  },
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-dotnettools.csdevkit",
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "github.vscode-pull-request-github"
+      ],
+      "settings": {
+        "dotnet.defaultSolution": "myDupFinder.sln",
+        "editor.formatOnSave": true,
+        "[csharp]": {
+          "editor.defaultFormatter": "ms-dotnettools.csharp"
+        }
+      }
+    }
+  }
+}
