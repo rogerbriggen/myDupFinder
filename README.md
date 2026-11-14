@@ -4,7 +4,7 @@ Find duplicates of files (or checks if the backup still is ok...)
 
 ## Project state: in develompent... unusable right now
 
-Build with latest dotnet relased:   ![.NET 10](https://github.com/rogerbriggen/myDupFinder/workflows/.NET%2010/badge.svg)
+Build with latest dotnet relased:   ![.NET 11](https://github.com/rogerbriggen/myDupFinder/workflows/.NET%2011/badge.svg)
 
 ## Command Line Usage
 
