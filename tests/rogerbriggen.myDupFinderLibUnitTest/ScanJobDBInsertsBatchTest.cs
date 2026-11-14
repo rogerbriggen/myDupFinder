@@ -424,4 +424,254 @@ public class ScanJobDBInsertsBatchTest : IDisposable
         Assert.Equal(2, rows.Count);
         Assert.Equal(0, db.TrackedEntityCount);
     }
+
+    // ---- Several operations on the same entity in one batch ----
+
+    private static readonly DateTime Date1 = new DateTime(2024, 2, 2, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime Date2 = new DateTime(2024, 3, 3, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime Modification = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
+    /// Writes two rows, loads them detached (the way refresh does) and then changes columns directly in the database,
+    /// so a targeted update that falls back to "whole entity modified" would write the stale values back.
+    /// </summary>
+    private (ScanJobDBInserts Db, ScanItemDto A, ScanItemDto B) SeedAndLoadTwo()
+    {
+        var db = CreateDb();
+        db.Enqueue(CreateItem("a", "HASH_A", 10));
+        db.Enqueue(CreateItem("b", "HASH_B", 20));
+        db.WriteChanges();
+        var loaded = db.GetAllItemsByBasePath(BasePath).OrderBy(i => i.FilenameAndPath).ToList();
+        using (var other = OpenContext())
+        {
+            other.ScanItems!.ExecuteUpdate(s => s.SetProperty(i => i.FileSize, 999L).SetProperty(i => i.FileSha512Hash, "CHANGED_BY_OTHER").SetProperty(i => i.ScanName, "CHANGED_BY_OTHER").SetProperty(i => i.PathBase, "/other/"));
+        }
+        return (db, loaded[0], loaded[1]);
+    }
+
+    private ScanItemDto ReadRow(Guid id)
+    {
+        using var context = OpenContext();
+        return context.ScanItems!.AsNoTracking().Single(i => i.Id == id);
+    }
+
+    private static void AssertColumnsOutsideOperationsUntouched(ScanItemDto row)
+    {
+        Assert.Equal("CHANGED_BY_OTHER", row.ScanName);
+        Assert.Equal("/other/", row.PathBase);
+    }
+
+    private static void AssertTouchOnly(ScanItemDto row, DateTime lastScan)
+    {
+        Assert.Equal(lastScan, row.LastScanDateUTC);
+        Assert.Equal(999, row.FileSize);
+        Assert.Equal("CHANGED_BY_OTHER", row.FileSha512Hash);
+        Assert.Equal(new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc), row.LastSha512ScanDateUTC);
+        Assert.Equal(new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc), row.FileLastModificationUTC);
+        AssertColumnsOutsideOperationsUntouched(row);
+    }
+
+    private static void AssertUpdated(ScanItemDto row, long size, string hash, DateTime lastScan, DateTime hashScan)
+    {
+        Assert.Equal(size, row.FileSize);
+        Assert.Equal(hash, row.FileSha512Hash);
+        Assert.Equal(Modification, row.FileLastModificationUTC);
+        Assert.Equal(lastScan, row.LastScanDateUTC);
+        Assert.Equal(hashScan, row.LastSha512ScanDateUTC);
+        AssertColumnsOutsideOperationsUntouched(row);
+    }
+
+    [Fact]
+    public void SameInstance_UpdateThenTouch_WritesAllUpdateColumnsAndTheLaterLastScanDate()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date1);
+        db.TouchItem(a, Date2);
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 222, "NEW_HASH", Date2, Date1);
+        // Update counts, touch does not
+        Assert.Equal(2 + 1, db.TotalSuccessCount);
+        Assert.Equal(0, db.TrackedEntityCount);
+    }
+
+    [Fact]
+    public void SameInstance_TouchThenUpdate_WritesAllUpdateColumns()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.TouchItem(a, Date1);
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date2);
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 222, "NEW_HASH", Date2, Date2);
+    }
+
+    [Fact]
+    public void SameInstance_TouchThenTouch_WritesTheLatest()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.TouchItem(a, Date1);
+        db.TouchItem(a, Date2);
+        db.WriteChanges();
+
+        AssertTouchOnly(ReadRow(a.Id), Date2);
+    }
+
+    [Fact]
+    public void SameInstance_UpdateThenUpdate_WritesTheLatest()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.UpdateItem(a, 222, Modification, "FIRST", Date1);
+        db.UpdateItem(a, 333, Modification, "SECOND", Date2);
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 333, "SECOND", Date2, Date2);
+        Assert.Equal(2 + 2, db.TotalSuccessCount);
+    }
+
+    [Fact]
+    public void SameInstance_TouchOrUpdateThenRemove_DeletesTheRow()
+    {
+        var (db, a, b) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.TouchItem(a, Date1);
+        db.RemoveItem(a);
+        db.UpdateItem(b, 222, Modification, "NEW_HASH", Date1);
+        db.RemoveItem(b);
+        db.WriteChanges();
+
+        Assert.Equal(0, CommittedItemCount());
+        Assert.Equal(0, db.PendingCount);
+    }
+
+    [Fact]
+    public void SameInstance_RemoveThenTouchOrUpdate_RowStaysDeleted_LaterOperationIsIgnored()
+    {
+        var (db, a, b) = SeedAndLoadTwo();
+        using var _ = db;
+
+        db.RemoveItem(a);
+        db.TouchItem(a, Date1);
+        db.RemoveItem(b);
+        db.UpdateItem(b, 222, Modification, "NEW_HASH", Date1);
+        db.WriteChanges();
+
+        Assert.Equal(0, CommittedItemCount());
+        // The ignored update did not count
+        Assert.Equal(2, db.TotalSuccessCount);
+    }
+
+    [Fact]
+    public void SameInstance_InsertThenTouchOrUpdate_InsertsTheFinalValues()
+    {
+        using var db = CreateDb();
+        var touched = CreateItem("touched", "HASH_T", 10);
+        var updated = CreateItem("updated", "HASH_U", 20);
+        db.Enqueue(touched);
+        db.Enqueue(updated);
+
+        db.TouchItem(touched, Date1);
+        db.UpdateItem(updated, 222, Modification, "NEW_HASH", Date2);
+        db.WriteChanges();
+
+        var rowTouched = ReadRow(touched.Id);
+        Assert.Equal(Date1, rowTouched.LastScanDateUTC);
+        Assert.Equal("HASH_T", rowTouched.FileSha512Hash);
+        var rowUpdated = ReadRow(updated.Id);
+        Assert.Equal(222, rowUpdated.FileSize);
+        Assert.Equal("NEW_HASH", rowUpdated.FileSha512Hash);
+        Assert.Equal(Modification, rowUpdated.FileLastModificationUTC);
+        Assert.Equal(Date2, rowUpdated.LastScanDateUTC);
+        Assert.Equal(Date2, rowUpdated.LastSha512ScanDateUTC);
+        Assert.Equal("TestScan", rowUpdated.ScanName);
+        // Two inserts count, the touch does not; the update after its insert counts again
+        Assert.Equal(2 + 1, db.TotalSuccessCount);
+        Assert.Equal(0, db.TrackedEntityCount);
+    }
+
+    [Fact]
+    public void DifferentInstancesSameKey_TouchThenUpdate_LaterWinsPerColumn()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var copy = ReadRow(a.Id);
+
+        db.TouchItem(a, Date1);
+        db.UpdateItem(copy, 222, Modification, "NEW_HASH", Date2);
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 222, "NEW_HASH", Date2, Date2);
+    }
+
+    [Fact]
+    public void DifferentInstancesSameKey_UpdateThenTouch_EarlierColumnsKept()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var copy = ReadRow(a.Id);
+
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date1);
+        db.TouchItem(copy, Date2);
+        db.WriteChanges();
+
+        AssertUpdated(ReadRow(a.Id), 222, "NEW_HASH", Date2, Date1);
+    }
+
+    [Fact]
+    public void DifferentInstancesSameKey_TouchThenTouch_LatestWins()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var copy = ReadRow(a.Id);
+
+        db.TouchItem(a, Date1);
+        db.TouchItem(copy, Date2);
+        db.WriteChanges();
+
+        AssertTouchOnly(ReadRow(a.Id), Date2);
+    }
+
+    [Fact]
+    public void DifferentInstancesSameKey_RemoveWithOtherInstance_DeletesTheRow()
+    {
+        var (db, a, _) = SeedAndLoadTwo();
+        using var _ = db;
+        var copy = ReadRow(a.Id);
+
+        db.UpdateItem(a, 222, Modification, "NEW_HASH", Date1);
+        db.RemoveItem(copy);
+        db.TouchItem(a, Date2);
+        db.WriteChanges();
+
+        Assert.Equal(1, CommittedItemCount());
+        using var check = OpenContext();
+        Assert.DoesNotContain(check.ScanItems!.ToList(), i => i.Id == a.Id);
+    }
+
+    [Fact]
+    public void DifferentInstancesSameKey_InsertedThenTouchedWithOtherInstance_InsertsRowWithTouchDate()
+    {
+        using var db = CreateDb();
+        var inserted = CreateItem("x", "HASH_X", 10);
+        var other = CreateItem("x", "HASH_OTHER", 77);
+        other.Id = inserted.Id;
+        db.Enqueue(inserted);
+
+        db.TouchItem(other, Date1);
+        db.WriteChanges();
+
+        var row = ReadRow(inserted.Id);
+        Assert.Equal(Date1, row.LastScanDateUTC);
+        Assert.Equal("HASH_X", row.FileSha512Hash);
+        Assert.Equal(10, row.FileSize);
+    }
 }

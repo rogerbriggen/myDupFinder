@@ -216,6 +216,10 @@ public class ScanJobDBInserts : IDisposable
 
         int successCount = 0;
         int errorCount = 0;
+        // The entity instance that is tracked for a primary key in this batch, and the keys removed in this batch.
+        // Needed because the same row can be touched, updated and removed several times (also through different objects).
+        var trackedById = new Dictionary<Guid, ScanItemDto>();
+        var removedIds = new HashSet<Guid>();
         try
         {
             using var transaction = _dbContext.Database.BeginTransaction();
@@ -227,6 +231,7 @@ public class ScanJobDBInserts : IDisposable
                     {
                         case PendingKind.InsertItem:
                             _dbContext.Add(op.Item!);
+                            trackedById[op.Item!.Id] = op.Item!;
                             successCount++;
                             break;
                         case PendingKind.InsertError:
@@ -234,25 +239,16 @@ public class ScanJobDBInserts : IDisposable
                             errorCount++;
                             break;
                         case PendingKind.Touch:
-                            {
-                                var entry = _dbContext.Attach(op.Item!);
-                                entry.Property(i => i.LastScanDateUTC).IsModified = true;
-                                break;
-                            }
+                            ApplyModification(op.Item!, false, trackedById, removedIds);
+                            break;
                         case PendingKind.Update:
+                            if (ApplyModification(op.Item!, true, trackedById, removedIds))
                             {
-                                var entry = _dbContext.Attach(op.Item!);
-                                entry.Property(i => i.FileSize).IsModified = true;
-                                entry.Property(i => i.FileLastModificationUTC).IsModified = true;
-                                entry.Property(i => i.FileSha512Hash).IsModified = true;
-                                entry.Property(i => i.LastScanDateUTC).IsModified = true;
-                                entry.Property(i => i.LastSha512ScanDateUTC).IsModified = true;
                                 successCount++;
-                                break;
                             }
+                            break;
                         case PendingKind.Remove:
-                            _dbContext.Attach(op.Item!);
-                            _dbContext.Remove(op.Item!);
+                            ApplyRemove(op.Item!, trackedById, removedIds);
                             break;
                         default:
                             throw new InvalidOperationException($"Unknown pending operation {op.Kind}");
@@ -293,6 +289,82 @@ public class ScanJobDBInserts : IDisposable
         TotalErrorCount += errorCount;
         _dbContext.ChangeTracker.Clear();
         _lastFlushTimestamp = _timeProvider.GetTimestamp();
+    }
+
+    /// <summary>
+    /// Applies a touch (only LastScanDateUTC) or an update (the five update columns) to the change tracker.
+    /// An entity is attached only if its key is not tracked yet; otherwise only the modified flags are added to the
+    /// tracked entry (an entity that is Added stays Added). If a different object with the same key is already
+    /// tracked, the written values of the given object are copied onto the tracked one, so the later operation wins
+    /// for the columns it writes and the columns only written earlier are kept.
+    /// Must be called with the lock held. Returns false if the operation was ignored because the row is removed in this batch.
+    /// </summary>
+    private bool ApplyModification(ScanItemDto item, bool fullUpdate, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    {
+        if (removedIds.Contains(item.Id))
+        {
+            return false;
+        }
+        ScanItemDto target;
+        if (trackedById.TryGetValue(item.Id, out var tracked))
+        {
+            target = tracked;
+            if (!ReferenceEquals(tracked, item))
+            {
+                tracked.LastScanDateUTC = item.LastScanDateUTC;
+                if (fullUpdate)
+                {
+                    tracked.FileSize = item.FileSize;
+                    tracked.FileLastModificationUTC = item.FileLastModificationUTC;
+                    tracked.FileSha512Hash = item.FileSha512Hash;
+                    tracked.LastSha512ScanDateUTC = item.LastSha512ScanDateUTC;
+                }
+            }
+        }
+        else
+        {
+            target = item;
+            _dbContext!.Attach(item);
+            trackedById[item.Id] = item;
+        }
+
+        var entry = _dbContext!.Entry(target);
+        if (entry.State == EntityState.Added)
+        {
+            // The row is inserted with the current values of the object, nothing to flag
+            return true;
+        }
+        entry.Property(i => i.LastScanDateUTC).IsModified = true;
+        if (fullUpdate)
+        {
+            entry.Property(i => i.FileSize).IsModified = true;
+            entry.Property(i => i.FileLastModificationUTC).IsModified = true;
+            entry.Property(i => i.FileSha512Hash).IsModified = true;
+            entry.Property(i => i.LastSha512ScanDateUTC).IsModified = true;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Applies a remove to the change tracker. Works on whatever instance is tracked for the key; operations
+    /// on the key that come later in the same batch are ignored. Must be called with the lock held.
+    /// </summary>
+    private void ApplyRemove(ScanItemDto item, Dictionary<Guid, ScanItemDto> trackedById, HashSet<Guid> removedIds)
+    {
+        if (!removedIds.Add(item.Id))
+        {
+            return;
+        }
+        if (trackedById.TryGetValue(item.Id, out var tracked))
+        {
+            // Removing an entity that is Added drops it again: nothing is inserted
+            _dbContext!.Remove(tracked);
+        }
+        else
+        {
+            _dbContext!.Attach(item);
+            _dbContext.Remove(item);
+        }
     }
 
     public bool IsEmptyScanItemTable()
@@ -420,6 +492,8 @@ public class ScanJobDBInserts : IDisposable
     /// Used by refresh when file size or modification date has changed and the hash needs recalculation.
     /// Only FileSize, FileLastModificationUTC, FileSha512Hash, LastScanDateUTC and LastSha512ScanDateUTC are written.
     /// The given object is changed immediately.
+    /// Several operations on the same row in one batch are applied in the order they were added (the later value wins per column).
+    /// If the row is removed earlier in the same batch (<see cref="RemoveItem"/>), this operation is ignored and does not count as success.
     /// </summary>
     public void UpdateItem(ScanItemDto existingItem, long newFileSize, DateTime newFileLastModificationUTC, string newFileSha512Hash, DateTime scanDateUTC)
     {
@@ -443,6 +517,8 @@ public class ScanJobDBInserts : IDisposable
     /// Updates the LastScanDateUTC of an existing scan item without recalculating the hash (queued, written with the next flush).
     /// Used by refresh when file size and date are unchanged (the file has not changed). Only LastScanDateUTC is written.
     /// The given object is changed immediately.
+    /// Several operations on the same row in one batch are applied in the order they were added.
+    /// If the row is removed earlier in the same batch (<see cref="RemoveItem"/>), this operation is ignored.
     /// </summary>
     public void TouchItem(ScanItemDto existingItem, DateTime scanDateUTC)
     {
@@ -461,6 +537,7 @@ public class ScanJobDBInserts : IDisposable
     /// <summary>
     /// Removes a scan item from the database (queued, written with the next flush).
     /// Used by refresh when a file no longer exists on disk.
+    /// A removed row stays removed: touches and updates of the same row that are added later in the same batch are ignored.
     /// </summary>
     public void RemoveItem(ScanItemDto item)
     {
