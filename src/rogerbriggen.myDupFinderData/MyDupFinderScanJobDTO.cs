@@ -35,6 +35,23 @@ public class MyDupFinderScanJobDTO
     /// which compares the listing with the database, sees the file as unchanged), even if the file changed between the listing and the hashing.
     /// </summary>
     public bool TrustDirectoryMetadata { get; set; }
+
+    /// <summary>
+    /// Number of files that are hashed at the same time by a scan job (1 - 64).
+    /// 1 (the default, also used when the element is missing in the project file): the scan reads and hashes one file after the other, with no extra threads.
+    /// That is the right value for a single hard disk, which reads slower when several files are read in parallel.
+    /// More than 1: the scan runs as a pipeline of one producer (directory listing, metadata, resume filter), this many hash workers and one database writer,
+    /// connected by bounded queues (memory stays flat for any tree size). Raise it for SSD or NVMe storage, and possibly for network shares, where SHA-512 on one core
+    /// or the latency of single reads is the limit. The gain depends on the storage and must be measured on it; it ends when the database writer or the disk is the limit.
+    /// The stored rows are the same for every value, only the order in which they reach the database can differ. Only scan jobs use it (refresh and check do not).
+    /// </summary>
+    public int HashWorkers { get; set; } = 1;
+
+    /// <summary>
+    /// Highest accepted value for <see cref="HashWorkers"/>.
+    /// </summary>
+    public const int MaxHashWorkers = 64;
+
     /// <summary>
     /// Highest accepted value for <see cref="ThrottlePercent"/>.
     /// </summary>
@@ -68,6 +85,12 @@ public class MyDupFinderScanJobDTO
         if (dto.ThrottlePercent > MaxThrottlePercent)
         {
             throw new ParameterException($"Param ThrottlePercent must be between 0 and {MaxThrottlePercent}! {dto.ThrottlePercent}");
+        }
+
+        //Rule: HashWorkers must be 1 - 64
+        if (dto.HashWorkers < 1 || dto.HashWorkers > MaxHashWorkers)
+        {
+            throw new ParameterException($"Param HashWorkers must be between 1 and {MaxHashWorkers}! {dto.HashWorkers}");
         }
 
         //Rule: BasePath must exist

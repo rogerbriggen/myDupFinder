@@ -405,7 +405,7 @@ public class UnreadableDirectoryRunnerTest : IDisposable
             DatabaseFile = _dbPath,
             ReportPath = _reportDir,
         };
-        var runner = new ScanRunnerSingleThread(job, serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, null, source);
+        var runner = new ScanRunner(job, serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, null, source);
 
         runner.Start(CancellationToken.None);
 
@@ -431,7 +431,7 @@ public class UnreadableDirectoryRunnerTest : IDisposable
         var log = new ListLoggerProvider();
         using var serviceProvider = BuildServices(log, LogLevel.Information);
         var job = new MyDupFinderScanJobDTO { JobName = "UnreadableTest", OriginComputer = "TestPC", ScanName = "TestScan", BasePath = _basePath, DatabaseFile = _dbPath, ReportPath = _reportDir };
-        var runner = new ScanRunnerSingleThread(job, serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider);
+        var runner = new ScanRunner(job, serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider);
 
         runner.Start(CancellationToken.None);
 
