@@ -68,10 +68,14 @@ internal class FindDupsInSameDB : BasicRunner<FindDupsInSameDB>, IFindDupsRunner
             DupReportWriter.Write(reportFile, rows);
             _logger.LogInformation("Duplicate report successfully created: {report}", reportFile);
         }
-        catch (IOException ex) when (File.Exists(reportFile))
+        catch (ReportAlreadyExistsException ex)
         {
             // The writer never overwrites: the existing report is untouched and no report was written
             _logger.LogError(ex, "The duplicate report {report} already exists and is not overwritten. No report was written. Remove or rename it and run the job again.", reportFile);
+        }
+        catch (ReportWriteFailedException ex)
+        {
+            _logger.LogError(ex, "Error in FindDups! Writing the duplicate report failed after the file was created, a partial report file may have been left: {report}. It is not deleted automatically.", reportFile);
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (Exception ex)

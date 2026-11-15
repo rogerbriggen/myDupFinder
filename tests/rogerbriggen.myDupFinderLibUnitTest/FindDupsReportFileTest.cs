@@ -147,9 +147,43 @@ public class FindDupsReportFileTest : IDisposable
         string report = ExistingReport("job");
         var rows = new List<DupReportRow> { new DupReportRow(Item("/r/a.txt", "H"), DupReportCategory.Duplicate, DupReportSource.Base, 1) };
 
-        Assert.Throws<IOException>(() => DupReportWriter.Write(report, rows));
+        var ex = Assert.Throws<ReportAlreadyExistsException>(() => DupReportWriter.Write(report, rows));
 
+        Assert.Equal(report, ex.ReportFile);
         Assert.Equal(ExistingContent, File.ReadAllText(report));
+    }
+
+    [Fact]
+    public void IsFileExists_RecognisesTheIOExceptionOfACreateNewOpenOfAnExistingFile()
+    {
+        string report = ExistingReport("job");
+
+        var ex = Assert.Throws<IOException>(() => new FileStream(report, FileMode.CreateNew, FileAccess.Write).Dispose());
+
+        Assert.True(DupReportWriter.IsFileExists(ex), $"HResult 0x{ex.HResult:X8}");
+        // another IOException (directory does not exist) is not "already exists"
+        var other = Assert.ThrowsAny<IOException>(() => new FileStream(Path.Combine(_tempDir, "missing", "x.csv"), FileMode.CreateNew, FileAccess.Write).Dispose());
+        Assert.False(DupReportWriter.IsFileExists(other), $"HResult 0x{other.HResult:X8}");
+    }
+
+    private static IEnumerable<DupReportRow> RowsThatFailWhileEnumerated(DupReportRow first)
+    {
+        yield return first;
+        throw new IOException("simulated write failure");
+    }
+
+    [Fact]
+    public void DupReportWriter_FailureAfterTheFileWasCreated_IsNotReportedAsAlreadyExisting()
+    {
+        string report = Path.Combine(_tempDir, "partial.csv");
+        var first = new DupReportRow(Item("/r/a.txt", "H"), DupReportCategory.Duplicate, DupReportSource.Base, 1);
+
+        var ex = Assert.Throws<ReportWriteFailedException>(() => DupReportWriter.Write(report, RowsThatFailWhileEnumerated(first)));
+
+        Assert.IsNotType<ReportAlreadyExistsException>(ex);
+        Assert.Equal(report, ex.ReportFile);
+        Assert.Equal("simulated write failure", ex.InnerException!.Message);
+        Assert.True(File.Exists(report)); // the partial file is left, not deleted
     }
 
     [Fact]

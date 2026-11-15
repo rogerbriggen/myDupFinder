@@ -1,6 +1,7 @@
 // Roger Briggen license this file to you under the MIT license.
 //
 
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -36,6 +37,24 @@ internal enum DupReportSource
 /// </summary>
 internal sealed record DupReportRow(ScanItemDto Item, DupReportCategory Category, DupReportSource Source, int GroupId);
 
+/// <summary>The report file already exists; it was not touched and nothing was written.</summary>
+internal sealed class ReportAlreadyExistsException : IOException
+{
+    public ReportAlreadyExistsException(string reportFile, Exception inner)
+        : base($"The report file already exists: {reportFile}", inner) => ReportFile = reportFile;
+
+    public string ReportFile { get; }
+}
+
+/// <summary>Writing failed after the report file was created by this run: a partial report file may have been left.</summary>
+internal sealed class ReportWriteFailedException : IOException
+{
+    public ReportWriteFailedException(string reportFile, Exception inner)
+        : base($"Writing the report file failed, a partial file may have been left: {reportFile}", inner) => ReportFile = reportFile;
+
+    public string ReportFile { get; }
+}
+
 internal static class DupReportWriter
 {
     public const string HeaderLine = "FilenameAndPath;FileSize;FileSha512Hash;Category;Source;GroupId";
@@ -50,24 +69,62 @@ internal static class DupReportWriter
             .ThenBy(r => r.Source)
             .ThenBy(r => r.Item.FilenameAndPath, System.StringComparer.OrdinalIgnoreCase);
 
-        // CreateNew: an existing report is never overwritten or truncated. The open fails with an IOException before anything is written.
-        using var fs = new StreamWriter(new FileStream(reportPathAndName, FileMode.CreateNew, FileAccess.Write, FileShare.Read));
-        fs.WriteLine(HeaderLine);
-        foreach (var row in ordered)
+        // CreateNew: an existing report is never overwritten or truncated. The open fails before anything is written.
+        // Only the failure of the open itself, with the "file exists" error code, means "already exists" (decided here, at the open, not by looking at the file afterwards).
+        FileStream stream;
+        try
         {
-            fs.Write('"');
-            fs.Write(EscapeForCsvQuoted(row.Item.FilenameAndPath));
-            fs.Write("\";");
-            fs.Write(row.Item.FileSize);
-            fs.Write(';');
-            fs.Write(row.Item.FileSha512Hash);
-            fs.Write(';');
-            fs.Write(row.Category);
-            fs.Write(';');
-            fs.Write(row.Source);
-            fs.Write(';');
-            fs.WriteLine(row.GroupId);
+            stream = new FileStream(reportPathAndName, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
         }
+        catch (IOException ex) when (IsFileExists(ex))
+        {
+            throw new ReportAlreadyExistsException(reportPathAndName, ex);
+        }
+
+        // From here on the file was created by this call: every failure may leave a partial file (never deleted automatically)
+        try
+        {
+            using var fs = new StreamWriter(stream);
+            fs.WriteLine(HeaderLine);
+            foreach (var row in ordered)
+            {
+                fs.Write('"');
+                fs.Write(EscapeForCsvQuoted(row.Item.FilenameAndPath));
+                fs.Write("\";");
+                fs.Write(row.Item.FileSize);
+                fs.Write(';');
+                fs.Write(row.Item.FileSha512Hash);
+                fs.Write(';');
+                fs.Write(row.Category);
+                fs.Write(';');
+                fs.Write(row.Source);
+                fs.Write(';');
+                fs.WriteLine(row.GroupId);
+            }
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            throw new ReportWriteFailedException(reportPathAndName, ex);
+        }
+    }
+
+    /// <summary>
+    /// True when the IOException of a <c>FileMode.CreateNew</c> open says that the file exists. On Windows .NET reports the Win32 error as HRESULT
+    /// 0x80070050 (ERROR_FILE_EXISTS, 80) or 0x800700B7 (ERROR_ALREADY_EXISTS, 183); on Unix the raw errno EEXIST (17).
+    /// </summary>
+    internal static bool IsFileExists(IOException ex)
+    {
+        const int ErrorFileExists = 80;
+        const int ErrorAlreadyExists = 183;
+        const int Eexist = 17;
+        if (OperatingSystem.IsWindows())
+        {
+            int code = ex.HResult & 0xFFFF;
+            return (ex.HResult & 0x7FFF0000) == 0x00070000 && (code == ErrorFileExists || code == ErrorAlreadyExists);
+        }
+        return ex.HResult == Eexist;
     }
 
     /// <summary>
