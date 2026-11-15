@@ -82,7 +82,8 @@ public class MyDupFinderScanJobDTO
         {
             throw new ParameterException("Param DatabaseFile may not be a subdirectory of BasePath!");
         }
-        if (dto.ReportPath.StartsWith(basePath))
+        // CheckSanity runs before FixDto: a ReportPath that is the BasePath itself, without trailing separator, must be caught too
+        if (!string.IsNullOrWhiteSpace(dto.ReportPath) && FileHelper.AddDirectoryDelimiter(dto.ReportPath).StartsWith(basePath))
         {
             throw new ParameterException("Param ReportPath may not be a subdirectory of BasePath!");
         }

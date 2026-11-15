@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
@@ -58,18 +59,35 @@ internal class FindDupsInDifferentDBs : BasicRunner<FindDupsInDifferentDBs>, IFi
     {
         base.Start(token);
 
-        //Setup base DB
-        DubFinderDB.SetupDB(FindDupsJobDTO.DatabaseFileBase);
+        string reportFile = FindDupsJobDTO.GetReportFilePath();
+        try
+        {
+            //Setup base DB
+            DubFinderDB.SetupDB(FindDupsJobDTO.DatabaseFileBase);
 
-        var rows = FindDupsJobDTO.FindDupsMode == MyDupFinderFindDupsJobDTO.EFindDupsMode.FindDupsTheWholeLot
-            ? BuildWholeLotRows(DubFinderDB.GetAllScanItems(), DubFinderDB.GetAllScanItemsFromOtherDB(FindDupsJobDTO.DatabaseFile))
-            : BuildOnlyDupsRows(DubFinderDB.FindDupsInDifferentDBs(FindDupsJobDTO.DatabaseFile));
+            var rows = FindDupsJobDTO.FindDupsMode == MyDupFinderFindDupsJobDTO.EFindDupsMode.FindDupsTheWholeLot
+                ? BuildWholeLotRows(DubFinderDB.GetAllScanItems(), DubFinderDB.GetAllScanItemsFromOtherDB(FindDupsJobDTO.DatabaseFile))
+                : BuildOnlyDupsRows(DubFinderDB.FindDupsInDifferentDBs(FindDupsJobDTO.DatabaseFile));
 
-        LogSummary(rows);
-        DupReportWriter.Write(FindDupsJobDTO.ReportPath + FindDupsJobDTO.JobName + " dupReport.csv", rows);
-        _logger.LogInformation($"Duplicate report successfully created: {FindDupsJobDTO.ReportPath + FindDupsJobDTO.JobName} dupReport.csv");
-
-        DubFinderDB.Dispose();
+            LogSummary(rows);
+            DupReportWriter.Write(reportFile, rows);
+            _logger.LogInformation("Duplicate report successfully created: {report}", reportFile);
+        }
+        catch (IOException ex) when (File.Exists(reportFile))
+        {
+            // The writer never overwrites: the existing report is untouched and no report was written
+            _logger.LogError(ex, "The duplicate report {report} already exists and is not overwritten. No report was written. Remove or rename it and run the job again.", reportFile);
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            _logger.LogError(ex, "Error in FindDups!");
+        }
+        finally
+        {
+            DubFinderDB.Dispose();
+        }
     }
 
     /// <summary>

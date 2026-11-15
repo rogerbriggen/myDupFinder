@@ -50,7 +50,8 @@ internal static class DupReportWriter
             .ThenBy(r => r.Source)
             .ThenBy(r => r.Item.FilenameAndPath, System.StringComparer.OrdinalIgnoreCase);
 
-        using var fs = new StreamWriter(reportPathAndName);
+        // CreateNew: an existing report is never overwritten or truncated. The open fails with an IOException before anything is written.
+        using var fs = new StreamWriter(new FileStream(reportPathAndName, FileMode.CreateNew, FileAccess.Write, FileShare.Read));
         fs.WriteLine(HeaderLine);
         foreach (var row in ordered)
         {
