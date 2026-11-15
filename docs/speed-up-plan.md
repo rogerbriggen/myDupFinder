@@ -230,6 +230,54 @@ The cross-database query alone (`CrossDatabaseQuery_ReferenceVersusAttached_Repo
 - Buffer size is a measured parameter. Compare several sizes (for example 64 KB, 256 KB, 1 MB, 4 MB) on HDD, SSD and a network share before fixing a default.
 - **Detect changes during hashing.** With enumeration ahead of hashing, metadata gets older. Re-read size and modification time after the file was hashed. If they differ, retry once; if still unstable, record the file as unstable instead of storing a hash that may not match its metadata.
 
+### Result
+
+Implemented as planned, with one shared `FileHasher` (`Helper/FileHasher.cs`) used by `ScanRunnerSingleThread`, `RefreshRunner` and `CheckRunner`. `ScanRunnerParallel` was **not** changed: its hash is inline in a lambda that has no result type for an unstable file and no resume or cancel path; it is retired in step 7.
+
+**What the hasher does.**
+
+- `File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.SequentialScan)`: the same access and sharing as `File.OpenRead` (which is `FileAccess.Read`, `FileShare.Read`) plus the sequential-scan hint, no `FileStream` buffering. Reads with `RandomAccess.Read` into a pooled buffer (`ArrayPool<byte>.Shared`, the buffer size stays at or below its limit of 1 MB), feeds `IncrementalHash` (SHA-512), `Convert.ToHexString`. The token is checked before every read, so a cancel does not wait for the end of a big file.
+- Equality with the old expression (`BitConverter.ToString(...).Replace("-", "")`, kept as `ReferenceFileHash` in the test project) is tested for sizes 0, 1, buffer-1, buffer, buffer+1, several buffers, 60 random sizes with random buffer sizes and content, and for buffer sizes from 1 byte to 4 MB. The sharing semantics are tested by holding the file open with every combination of `FileAccess` (Read, Write, ReadWrite) and seven `FileShare` values and comparing with `File.OpenRead`: the same files can be hashed and the same ones fail with the same exception type; also for a missing file, a missing directory and a directory path.
+- A read request is never larger than the rest of the file (size from the handle) plus one byte, and 4 KB at or beyond the expected end. Without this a big buffer made every small file slower (ReadFile into a 4 MB buffer for a 2 KB file: 20000 small files 1.30 s with 4 MB against 1.16 s with 64 KB); with it the buffer size has no effect on small files. The result does not depend on it, the loop always reads until a read returns 0.
+- The ThroughputTracker hash stage still covers open, read, hash and close (the call of the hasher, retry included).
+
+**Buffer size** (`FileHasherBenchmark`, see [benchmark.md](benchmark.md); Release, Windows 11, NVMe SSD (the drive of the temporary folder); median of 5 runs, order rotated every run; **warm cache**, see below):
+
+| Variant | 1 GB file, MB/s | 20000 small files (101 MB), files/s |
+| --- | --- | --- |
+| old: `File.OpenRead` + `ComputeHash` | 430 | 20474 |
+| `FileHasher` 64 KB | 557 | 17302 |
+| `FileHasher` 256 KB | 568 | 17567 |
+| `FileHasher` 1 MB | 570 | 17663 |
+| `FileHasher` 4 MB | 576 | 17761 |
+| `FileStream`, 1 MB blocks, buffered (4096) / unbuffered (0) | 568 / 569 | 21602 / 21374 |
+| `FileStream`, 4 MB blocks, buffered / unbuffered | 582 / 573 | 18276 / 18410 |
+
+Default: **1 MB** (`FileHasher.DefaultBufferSize`, an internal constant, no job setting). The numbers do not separate 256 KB, 1 MB and 4 MB (differences below 1.5 %, run-to-run noise on this machine); 64 KB is about 2 % slower. 1 MB is a tie-break, not a measured optimum: it is the largest size the shared array pool serves and it means fewer requests on media where every request is a round trip. The sequential-scan hint, `FileStream` buffered versus unbuffered: no difference when the blocks are 1 MB or larger (the stream's own buffer is bypassed for big reads).
+Compared with the old expression the large file is 30 % faster (the 4096-byte reads are gone). On many small files the new hasher is about 12 to 15 % slower than the old expression (1.13 s against 0.98 s for 20000 files, i.e. about 8 microseconds per file): that is the price of the change detection, four handle queries per file (size and last write time before and after reading). A `FileStream` variant without these queries measures 0.93 s, so the queries are the difference. The scan benchmark in the table below shows the effect in a whole run.
+
+**What could not be measured.** Cold cache (the cache of the operating system cannot be emptied from a test without administrator rights; the large file was written just before and 63 GB of RAM keep it, so all numbers are CPU bound by SHA-512 at about 570 MB/s and cannot show the effect of the block size on the disk), hard disk (an HDD is in the machine but the benchmark ran in the temporary folder on the NVMe SSD), network shares, and the effect with several workers (step 7). The decision between 256 KB and 4 MB should be revisited with a cold-cache run on the HDD and a share before step 7.
+
+**Unstable files.**
+
+- Size and last write time are read from the open handle (`RandomAccess.GetLength`, `File.GetLastWriteTimeUtc(SafeFileHandle)`, both exist in .NET 11) right after opening and again after the last read; the bytes actually read are counted. **Stable** = size and time equal before and after and bytes read = size. Otherwise the file is read once more from the start (new open); if that is not stable either, the file is **unstable**. The values of the handle equal the path based ones tick for tick (`HandleValues_EqualThePathValues_TickForTick`: four timestamps including odd ticks, compared with `File.GetLastWriteTimeUtc(path)`, `FileInfo` and `FileMetadata.Read`, `Kind` is Utc).
+- Stable result, default mode: the size and last write time **returned by the hasher** are stored with the hash (scan item, refresh update and new row, check report). Creation time stays as it was read before the hash. They can differ from the values read before the hash if the file changed in between; they belong to the hash. Check also compares and classifies with them.
+- Stable result, `TrustDirectoryMetadata`: the directory listing values are stored as before step 6, so that the next refresh, which compares the listing with the database, sees the file as unchanged; the hash can then belong to a newer state of the file than the stored size and time (the documented trade-off of the setting). The stability check itself uses the handle values in both modes.
+- Unstable: **scan** stores no scan item, stores a scan error item (message: the file changed while it was read), logs a warning, goes on. **Refresh**: an existing row stays exactly as it is (not updated, not touched, not removed), a new file is not added; counted in `ErrorCount` and in the new `UnstableCount`; warning. **Check**: no report row (not even `NewOnDisk` for a new file), the database row is claimed so it is not reported as `MissingOnDisk`; counted in `ErrorCount` and `UnstableCount`; warning. Every summary line has the unstable count (`UnstableFiles=` in the scan line, `Unstable=` in the refresh and check lines).
+- A file that is skipped (resume filter, refresh unchanged, check with `SkipHashCheck`) is not opened at all, as before; tests count the opens through a hook: second scan 0, untouched refresh 0, check with `SkipHashCheck` 0, a changed file in refresh 1, a normal check opens every file exactly once.
+- **What this does and does not catch.** With `FileShare.Read` (same as before) Windows refuses every writer while the hasher reads, so on Windows a file is practically stable during the read (the tests that change a file during the read use an internal `FileShare.ReadWrite` hasher for that reason, and one test pins that a writer is refused with the default). Where locks are only advisory or absent (network shares, other systems) the check does catch size changes and the time change of writers that update it. It does not catch a change that keeps size and last write time, and it does not cover the time between the metadata read of the runner and the open of the file.
+
+**Cancel inside a file.** The hasher throws `OperationCanceledException` before the next block. Scan: the file gets no item and no error item, the pending items are written, state `cancelled`, the same as a cancel between two files (the existing check after the hash call sees the token). Refresh: the per-file catch handles it before the generic error catch: pending writes flushed, nothing stored or counted for the file, state `cancelled`. Check: same, the report is flushed, no row, no error count. Each runner has a test with a deterministic cancel after the second block of a multi-block file, and a restart that completes the job.
+
+**Benchmarks** (`MYDUPFINDER_BENCHMARK=1`, 20000 files, default mode, one machine, noisy):
+
+| Benchmark | Before | After |
+| --- | --- | --- |
+| Scan (`Scan_GeneratedTree_ReportsTimings`, 2817 MB) | `9.9 s, 283.3 MB/s, enumerate=0.6 s, hash=7.3 s, database=2.0 s` | `8.5 s, 332.2 MB/s, enumerate=0.7 s, hash=5.9 s, database=1.9 s` |
+| First scan of small files (`Rescan_...`, 101 MB) | `4.2 s, enumerate=0.6 s, hash=1.0 s, database=2.5 s` | `4.4 s, enumerate=0.6 s, hash=1.1 s, database=2.5 s` |
+| Resume (second run) | `2.1 s, enumerate=0.7 s, hash=0.0 s, database=1.4 s` | `2.1 s, enumerate=0.7 s, hash=0.0 s, database=1.4 s` |
+| Check `IgnoreBasePath` | `0.91 s total` | `0.95 s total` |
+
 ## Step 7 — Scan pipeline
 
 Replace the single-thread loop with three stages connected by bounded channels: one enumerator, N hash workers, one database writer.

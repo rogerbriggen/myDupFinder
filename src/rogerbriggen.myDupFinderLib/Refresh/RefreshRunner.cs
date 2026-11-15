@@ -5,7 +5,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -19,7 +18,9 @@ namespace RogerBriggen.MyDupFinderLib;
 /// - Adding new files that are not yet in the database
 /// - Updating existing files whose size or modification date has changed (recalculates hash)
 /// - Removing files from the database that no longer exist on disk
-/// - Skipping hash recalculation for files where size and date are unchanged
+/// - Skipping hash recalculation for files where size and date are unchanged (such a file is not opened at all)
+/// A file that changes while it is hashed (twice in a row, see <see cref="FileHasher"/>) is counted in <see cref="ErrorCount"/> and <see cref="UnstableCount"/> and leaves the database unchanged.
+/// Without TrustDirectoryMetadata the size and last write time stored with a hash are the ones of the open file that was hashed; with it the values of the directory listing.
 /// </summary>
 internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 {
@@ -29,10 +30,12 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
     /// <param name="dbInserts">Only for tests: a ready made object (for example with a small batch size). The runner disposes it.</param>
     /// <param name="fileSource">Only for tests: where the files come from (for example with unreadable directories). Default: the real file system.</param>
-    internal RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null) : base(logger, serviceProvider)
+    /// <param name="fileHasher">Only for tests: a hasher with hooks or another buffer size. Default: <see cref="FileHasher.Default"/>.</param>
+    internal RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null, FileHasher? fileHasher = null) : base(logger, serviceProvider)
     {
         RefreshJobDTO = refreshJobDTO;
         _fileSource = fileSource ?? FileTreeEnumerationSource.Instance;
+        _fileHasher = fileHasher ?? FileHasher.Default;
         ScanJobDBInserts = dbInserts ?? new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -45,11 +48,19 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
     private readonly IFileEnumerationSource _fileSource;
 
+    private readonly FileHasher _fileHasher;
+
     public int AddedCount { get; private set; }
     public int UpdatedCount { get; private set; }
     public int RemovedCount { get; private set; }
     public int UnchangedCount { get; private set; }
     public int ErrorCount { get; private set; }
+
+    /// <summary>
+    /// Files that changed while they were read, twice in a row. They are also counted in <see cref="ErrorCount"/>. Nothing is stored for them:
+    /// an existing row stays exactly as it was (not updated, not touched, not removed), a new file is not added.
+    /// </summary>
+    public int UnstableCount { get; private set; }
 
     /// <summary>
     /// Rows that were NOT removed although their file was not enumerated, because they lie below a directory that could not be read.
@@ -138,7 +149,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 if (CancelToken.IsCancellationRequested)
                 {
                     WriteChanges();
-                    _logger.LogInformation("Refresh was cancelled by user... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+                    _logger.LogInformation("Refresh was cancelled by user... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} Unstable={unstable}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, UnstableCount);
                     Throughput.LogSummary("Refresh cancelled");
                     RunnerState = IService.EServiceState.cancelled;
                     return;
@@ -177,16 +188,27 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                         else
                         {
                             // Size or date changed - recalculate hash
-                            string newHash = CalcHash(currentFile);
-                            long oldSize = existingItem.FileSize;
-                            long dbStart = Throughput.StartStage();
-                            ScanJobDBInserts.UpdateItem(existingItem, fileSize, fileLastModificationUTC, newHash, DateTime.UtcNow);
-                            Throughput.EndStage(ThroughputStage.Database, dbStart);
-                            hashedBytes = fileSize;
-                            UpdatedCount++;
-                            if (_logger.IsEnabled(LogLevel.Trace))
+                            FileHashResult hashed = CalcHash(currentFile);
+                            if (!hashed.IsStable)
                             {
-                                _logger.LogTrace("Refresh: Updated {file} (size: {oldSize}->{newSize}, date changed)", currentFile, oldSize, fileSize);
+                                // The row stays exactly as it is: not updated, not touched, not removed
+                                RecordUnstable(currentFile, hashed);
+                            }
+                            else
+                            {
+                                // Size and time of the file itself belong to the hash; with TrustDirectoryMetadata the listing values are stored, so that the next refresh (which compares the listing) sees the file as unchanged
+                                long storedSize = RefreshJobDTO.TrustDirectoryMetadata ? fileSize : hashed.Length;
+                                DateTime storedLastModificationUTC = RefreshJobDTO.TrustDirectoryMetadata ? fileLastModificationUTC : hashed.LastWriteTimeUtc;
+                                long oldSize = existingItem.FileSize;
+                                long dbStart = Throughput.StartStage();
+                                ScanJobDBInserts.UpdateItem(existingItem, storedSize, storedLastModificationUTC, hashed.Hash!, DateTime.UtcNow);
+                                Throughput.EndStage(ThroughputStage.Database, dbStart);
+                                hashedBytes = hashed.BytesRead;
+                                UpdatedCount++;
+                                if (_logger.IsEnabled(LogLevel.Trace))
+                                {
+                                    _logger.LogTrace("Refresh: Updated {file} (size: {oldSize}->{newSize}, date changed)", currentFile, oldSize, storedSize);
+                                }
                             }
                         }
                     }
@@ -209,18 +231,42 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                             FileSize = fileSize
                         };
 
-                        string hash = CalcHash(currentFile);
-                        si.FileSha512Hash = hash;
-                        long dbStart = Throughput.StartStage();
-                        ScanJobDBInserts.Enqueue(si);
-                        Throughput.EndStage(ThroughputStage.Database, dbStart);
-                        hashedBytes = fileSize;
-                        AddedCount++;
-                        if (_logger.IsEnabled(LogLevel.Trace))
+                        FileHashResult hashed = CalcHash(currentFile);
+                        if (!hashed.IsStable)
                         {
-                            _logger.LogTrace("Refresh: Added new file {file}", currentFile);
+                            // Nothing is stored for the file
+                            RecordUnstable(currentFile, hashed);
+                        }
+                        else
+                        {
+                            si.FileSha512Hash = hashed.Hash!;
+                            if (!RefreshJobDTO.TrustDirectoryMetadata)
+                            {
+                                // Size and time of the file itself belong to the hash (the creation time stays as it was read before)
+                                si.FileSize = hashed.Length;
+                                si.FileLastModificationUTC = hashed.LastWriteTimeUtc;
+                            }
+                            long dbStart = Throughput.StartStage();
+                            ScanJobDBInserts.Enqueue(si);
+                            Throughput.EndStage(ThroughputStage.Database, dbStart);
+                            hashedBytes = hashed.BytesRead;
+                            AddedCount++;
+                            if (_logger.IsEnabled(LogLevel.Trace))
+                            {
+                                _logger.LogTrace("Refresh: Added new file {file}", currentFile);
+                            }
                         }
                     }
+                }
+                catch (OperationCanceledException) when (CancelToken.IsCancellationRequested)
+                {
+                    // Cancelled inside a big file: nothing is stored or counted for it (no error), the pending writes of the files before it are flushed,
+                    // and the run ends as cancelled, the same as for a cancel between two files
+                    WriteChanges();
+                    _logger.LogInformation("Refresh was cancelled by user while a file was read... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} Unstable={unstable}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, UnstableCount);
+                    Throughput.LogSummary("Refresh cancelled");
+                    RunnerState = IService.EServiceState.cancelled;
+                    return;
                 }
 #pragma warning disable CA1031 // Do not catch general exception types
                 catch (Exception ex) when (ex is not BatchWriteException)
@@ -248,7 +294,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 if (CancelToken.IsCancellationRequested)
                 {
                     WriteChanges();
-                    _logger.LogInformation("Refresh was cancelled by user during removal phase... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+                    _logger.LogInformation("Refresh was cancelled by user during removal phase... Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} Unstable={unstable}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, UnstableCount);
                     Throughput.LogSummary("Refresh cancelled");
                     RunnerState = IService.EServiceState.cancelled;
                     return;
@@ -292,13 +338,13 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
             {
                 _logger.LogWarning("Refresh: {count} directories could not be read completely. {kept} database rows below them were kept (not removed, even if the file is gone). Directories: {directories}", UnreadableDirectories.Count, ProtectedCount, UnreadableDirectoryLog.Join(UnreadableDirectories));
             }
-            _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} KeptBecauseDirectoryUnreadable={kept} UnreadableDirectories={unreadable}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, ProtectedCount, UnreadableDirectories.Count);
+            _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} Unstable={unstable} KeptBecauseDirectoryUnreadable={kept} UnreadableDirectories={unreadable}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, UnstableCount, ProtectedCount, UnreadableDirectories.Count);
             Throughput.LogSummary("Refresh finished");
         }
         catch (BatchWriteException ex)
         {
             // Fatal: the database cannot be written. RunnerState is left as it is (running).
-            _logger.LogError(ex, "Refresh stopped because of a database write failure. {PendingCount} operations could not be written. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} (counted when queued, not all of them are in the database).", ex.PendingOperationCount, AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+            _logger.LogError(ex, "Refresh stopped because of a database write failure. {PendingCount} operations could not be written. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} Unstable={unstable} (counted when queued, not all of them are in the database).", ex.PendingOperationCount, AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, UnstableCount);
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (Exception ex)
@@ -321,20 +367,26 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
         }
     }
 
-    private string CalcHash(string filePath)
+    /// <exception cref="OperationCanceledException">The run was cancelled while the file was read.</exception>
+    private FileHashResult CalcHash(string filePath)
     {
         // The hash stage covers opening, reading, hashing and closing the file
         long hashStart = Throughput.StartStage();
         try
         {
-            using var sha512 = SHA512.Create();
-            using var stream = File.OpenRead(filePath);
-            return BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
+            return _fileHasher.Compute(filePath, CancelToken);
         }
         finally
         {
             Throughput.EndStage(ThroughputStage.Hash, hashStart);
         }
+    }
+
+    private void RecordUnstable(string filePath, FileHashResult hashed)
+    {
+        ErrorCount++;
+        UnstableCount++;
+        _logger.LogWarning("Refresh: {file} changed while it was read (read twice from the start, not stable either time: {description}). Nothing was stored for it.", filePath, hashed.InstabilityDescription);
     }
 
     // Protected implementation of Dispose pattern.

@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.IO;
-using System.Security.Cryptography;
 using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -24,10 +23,12 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
     }
 
     /// <param name="dbInserts">Only for tests: a ready made object (for example with a small batch size). The runner disposes it.</param>
-    internal ScanRunnerSingleThread(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunnerSingleThread>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null) : base(logger, serviceProvider)
+    /// <param name="fileHasher">Only for tests: a hasher with hooks or another buffer size. Default: <see cref="FileHasher.Default"/>.</param>
+    internal ScanRunnerSingleThread(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunnerSingleThread>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null, FileHasher? fileHasher = null) : base(logger, serviceProvider)
     {
         ScanJobDTO = scanJobDTO;
         _fileSource = fileSource;
+        _fileHasher = fileHasher ?? FileHasher.Default;
         ScanJobDBInserts = dbInserts ?? new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -44,10 +45,17 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
 
     private readonly IFileEnumerationSource? _fileSource;
 
+    private readonly FileHasher _fileHasher;
+
     /// <summary>
     /// Files, bytes and stage times of the current run.
     /// </summary>
     internal ThroughputTracker Throughput { get; private set; }
+
+    /// <summary>
+    /// Files that changed while they were read, twice in a row. They get no scan item; a scan error item records them (it is also counted in the error count of the database writer).
+    /// </summary>
+    internal int UnstableCount { get; private set; }
 
     public override void Start(CancellationToken token)
     {
@@ -89,7 +97,7 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
                 if (CancelToken.IsCancellationRequested)
                 {
                     WriteChanges();
-                    _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                    _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount} UnstableFiles={UnstableCount}");
                     Throughput.LogSummary("Scanning cancelled");
                     LogUnreadableSummary(complete: false);
                     RunnerState = IService.EServiceState.cancelled;
@@ -169,7 +177,7 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
             }
             WriteChanges();
             RunnerState = IService.EServiceState.finished;
-            _logger.LogInformation($"Scanning finished... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+            _logger.LogInformation($"Scanning finished... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount} UnstableFiles={UnstableCount}");
             Throughput.LogSummary("Scanning finished");
             LogUnreadableSummary(complete: true);
         }
@@ -221,20 +229,45 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
         // Only the hashing is inside the try/catch. A database failure (BatchWriteException) must not be
         // recorded as a hashing error of this file: it ends the run.
         Exception? hashError = null;
+        bool unstable = false;
+        long hashedBytes = 0;
         try
         {
             // The hash stage covers opening, reading, hashing and closing the file
             long hashStart = Throughput.StartStage();
+            FileHashResult hashResult;
             try
             {
-                using var sha512 = SHA512.Create();
-                using var stream = File.OpenRead(item.FilenameAndPath);
-                item.FileSha512Hash = BitConverter.ToString(sha512.ComputeHash(stream)).Replace("-", "", StringComparison.Ordinal);
+                hashResult = _fileHasher.Compute(item.FilenameAndPath, CancelToken);
             }
             finally
             {
                 Throughput.EndStage(ThroughputStage.Hash, hashStart);
             }
+
+            if (hashResult.IsStable)
+            {
+                item.FileSha512Hash = hashResult.Hash!;
+                if (!ScanJobDTO.TrustDirectoryMetadata)
+                {
+                    // Size and time of the file itself, read from the open file before and after the hash: they belong to the hash.
+                    // (With TrustDirectoryMetadata the values of the directory listing stay, so that a later refresh, which compares the listing, sees the file as unchanged.)
+                    item.FileSize = hashResult.Length;
+                    item.FileLastModificationUTC = hashResult.LastWriteTimeUtc;
+                }
+                hashedBytes = hashResult.BytesRead;
+            }
+            else
+            {
+                unstable = true;
+                hashError = new FileChangedWhileReadException($"The file changed while it was read (read twice from the start, not stable either time: {hashResult.InstabilityDescription}). No hash was stored.");
+            }
+        }
+        catch (OperationCanceledException) when (CancelToken.IsCancellationRequested)
+        {
+            // Cancelled inside a big file: nothing is stored, no error item, no error count. The caller looks at the token right after this
+            // method returns, writes the pending items and ends the run as cancelled, the same as for a cancel between two files.
+            return;
         }
 #pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen
         catch (Exception e)
@@ -258,11 +291,19 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
             {
                 _logger.LogTrace("File {file} successfull finished", item.FilenameAndPath);
             }
-            Throughput.AddFile(item.FileSize);
+            Throughput.AddFile(hashedBytes);
         }
         else
         {
-            _logger.LogError(hashError, "Hashing of {file} failed.", item.FilenameAndPath);
+            if (unstable)
+            {
+                UnstableCount++;
+                _logger.LogWarning("Hashing of {file} was not possible: {message}", item.FilenameAndPath, hashError.Message);
+            }
+            else
+            {
+                _logger.LogError(hashError, "Hashing of {file} failed.", item.FilenameAndPath);
+            }
             long errorDbStart = Throughput.StartStage();
             try
             {
