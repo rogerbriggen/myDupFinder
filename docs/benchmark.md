@@ -111,6 +111,25 @@ Two more benchmarks in the same class (same gate):
 
 Numbers are in the Result section of step 5 in [speed-up-plan.md](speed-up-plan.md).
 
+## applyCheck benchmark
+
+`ApplyCheckBenchmark.Apply_MixedReport_ReportsTimings` measures applying a check report. Same `MYDUPFINDER_BENCHMARK=1` gate; `MYDUPFINDER_BENCHMARK_FILES` is the number of report rows (default 30000). Run it with `--filter "FullyQualifiedName~ApplyCheckBenchmark"`. No files are created: the generator writes a database and a report directly (40 % `Modified`, 10 % `BitRotSuspect`, 10 % `ModifiedNoHashChange`, 10 % `MissingOnDisk`, 30 % `NewOnDisk`; the first four need a database row).
+
+1. Copies the generated database twice.
+2. "Before": applies the rows to the first copy the way applyCheck did before this change: one `SaveChanges` (one commit) per row with `ApplyUpdateById`, `RemoveItemById` and a plain `InsertItem` (no lookup of the path).
+3. "After": applies the report to the second copy with the real `CheckReportApplier` (transactions of 500 rows, an insert looks for the path first).
+4. Compares both databases (path, base path, size, modification date, hash), then applies the report a second time and prints its time. The benchmark fails if the tables differ, if a counter is wrong or if the second apply inserts anything.
+
+```
+Report: 30000 rows (database with 21000 rows): 12000 Modified, 3000 BitRotSuspect, 3000 ModifiedNoHashChange, 3000 MissingOnDisk, 9000 NewOnDisk
+Before (one commit per row, plain insert): 37.7 s, 795 rows/s
+After (transactions of 500 rows, insert looks for the path first): 2.8 s, 10814 rows/s. Updated=18000 Inserted=9000 Removed=3000 Skipped=0 Errors=0
+Speed-up: 13.6x
+Second apply of the same report: 1.8 s. Inserted=0 AlreadyApplied=9000 Skipped=3000
+```
+
+(One run on the development machine, temp folder on an SSD; the commit cost depends on the disk.)
+
 ## Hasher benchmark
 
 `FileHasherBenchmark` (step 6 of the plan) compares the old hash expression (`File.OpenRead` + `ComputeHash`) with the shared `FileHasher` at the buffer sizes 64 KB, 256 KB, 1 MB and 4 MB, and with plain `FileStream` reads (1 MB and 4 MB blocks, with the stream's own buffer of 4096 bytes and without it), on one large file and on many small files. Same `MYDUPFINDER_BENCHMARK=1` gate. Run it with `--filter "FullyQualifiedName~FileHasherBenchmark"`, or one of the two with `--filter "FullyQualifiedName~Hasher_LargeFile"` / `"FullyQualifiedName~Hasher_ManySmallFiles"`.

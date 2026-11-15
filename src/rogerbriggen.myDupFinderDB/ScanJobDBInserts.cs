@@ -59,6 +59,12 @@ public class ScanJobDBInserts : IDisposable
     private readonly object dbContextLock = new object();
     private readonly ILogger<ScanJobDBInserts> _logger;
     private bool _disposedValue;
+
+    // The explicit transaction of BeginBatch/CommitBatch (applyCheck), null when no batch is open. Writes of the batch are counted here and only
+    // added to TotalSuccessCount when the commit succeeded.
+    private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _batchTransaction;
+    private int _batchSuccessCount;
+    private int _batchWriteCount;
     public int TotalSuccessCount { get; private set; }
     public int TotalErrorCount { get; private set; }
 
@@ -227,6 +233,10 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
+            if (_batchTransaction is not null)
+            {
+                throw new InvalidOperationException($"{callerName} called while a batch (BeginBatch) is open. The queue and the batch transaction must not be mixed.");
+            }
             _pending.Add(operation);
             if ((_pending.Count >= _batchSize) || (_timeProvider.GetElapsedTime(_lastFlushTimestamp) >= _flushInterval))
             {
@@ -483,6 +493,9 @@ public class ScanJobDBInserts : IDisposable
 
     internal static List<ScanItemDto> GetAllItemsByScanIdentity(DubFinderContext context, string originComputer, string scanName) =>
         context.Set<ScanItemDto>().AsNoTracking().Where(s => s.OriginComputer == originComputer && s.ScanName == scanName).ToList();
+
+    /// <summary>All rows with exactly this FilenameAndPath (an equality lookup on the FilenameAndPath index). Not tracked.</summary>
+    internal static List<ScanItemDto> GetItemsByExactPath(DubFinderContext context, string filenameAndPath) => context.Set<ScanItemDto>().AsNoTracking().Where(s => s.FilenameAndPath == filenameAndPath).ToList();
 
     internal static ScanItemDto? GetItemByPath(DubFinderContext context, string filenameAndPath) => context.Set<ScanItemDto>().AsNoTracking().FirstOrDefault(s => s.FilenameAndPath == filenameAndPath);
 
@@ -746,7 +759,7 @@ public class ScanJobDBInserts : IDisposable
                 // Also when the save failed: a left over entity would be written (all columns) with the next flush
                 _dbContext.Entry(existingItem).State = EntityState.Detached;
             }
-            TotalSuccessCount++;
+            RecordWrite(countsAsSuccess: true);
         }
     }
 
@@ -776,12 +789,13 @@ public class ScanJobDBInserts : IDisposable
                 // Detached after a successful save anyway; after a failed one the entity must not stay as Deleted in the tracker
                 _dbContext.Entry(existingItem).State = EntityState.Detached;
             }
+            RecordWrite(countsAsSuccess: false);
             return true;
         }
     }
 
     /// <summary>
-    /// Inserts a brand new scan item, used by applyCheck for NewOnDisk rows.
+    /// Inserts a brand new scan item, used by applyCheck for NewOnDisk rows. Always inserts, see <see cref="InsertItemIfNew"/> for the idempotent version.
     /// </summary>
     public void InsertItem(ScanItemDto item)
     {
@@ -801,6 +815,178 @@ public class ScanJobDBInserts : IDisposable
                 // Also when the save failed: a left over Added entity would be inserted again with the next flush
                 _dbContext.Entry(item).State = EntityState.Detached;
             }
+            RecordWrite(countsAsSuccess: true);
+        }
+    }
+
+    /// <summary>
+    /// The result of <see cref="InsertItemIfNew"/>.
+    /// </summary>
+    public enum InsertIfNewResult
+    {
+        /// <summary>No row had this FilenameAndPath, the row was inserted.</summary>
+        Inserted,
+
+        /// <summary>A row with this FilenameAndPath, the same hash, size and modification time exists: the item was applied before. Nothing was written.</summary>
+        AlreadyApplied,
+
+        /// <summary>A row with this FilenameAndPath exists, but its hash, size or modification time differ. Nothing was written.</summary>
+        ConflictingRowExists,
+    }
+
+    /// <summary>
+    /// Inserts the item unless a row with exactly its FilenameAndPath exists already (lookup through the FilenameAndPath index).
+    /// A row with the same hash (ignoring case), size and last modification time means the item was applied before; a row with other
+    /// values means the caller's information is out of date. Both leave the database unchanged. Used by applyCheck so that a report can be applied more than once.
+    /// </summary>
+    public InsertIfNewResult InsertItemIfNew(ScanItemDto item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("InsertItemIfNew called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            var existing = GetItemsByExactPath(_dbContext, item.FilenameAndPath);
+            if (existing.Count > 0)
+            {
+                bool sameState = existing.Exists(e =>
+                    e.FileSize == item.FileSize
+                    && e.FileLastModificationUTC == item.FileLastModificationUTC
+                    && string.Equals(e.FileSha512Hash, item.FileSha512Hash, StringComparison.OrdinalIgnoreCase));
+                return sameState ? InsertIfNewResult.AlreadyApplied : InsertIfNewResult.ConflictingRowExists;
+            }
+            InsertItem(item);
+            return InsertIfNewResult.Inserted;
+        }
+    }
+
+    /// <summary>
+    /// Opens one explicit transaction. Until <see cref="CommitBatch"/> (or <see cref="RollbackBatch"/>) the direct writes
+    /// (<see cref="ApplyUpdateById"/>, <see cref="RemoveItemById"/>, <see cref="InsertItem"/>, <see cref="InsertItemIfNew"/>) are saved inside it, so a whole group of rows costs one commit.
+    /// A write that fails inside the batch throws as before; EF rolls back to a savepoint it sets before every save, so the transaction stays open
+    /// and the rows written before and after are still committed. Not for the queued operations (Enqueue, TouchItem, UpdateItem, RemoveItem): they
+    /// have their own transaction per flush and throw while a batch is open.
+    /// </summary>
+    public void BeginBatch()
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("BeginBatch called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            if (_batchTransaction is not null)
+            {
+                throw new InvalidOperationException("BeginBatch called while a batch is already open.");
+            }
+            if (_pending.Count > 0)
+            {
+                throw new InvalidOperationException("BeginBatch called with pending queued operations. Call WriteChanges first.");
+            }
+            _batchTransaction = _dbContext.Database.BeginTransaction();
+            _batchSuccessCount = 0;
+            _batchWriteCount = 0;
+        }
+    }
+
+    /// <summary>
+    /// Gets the number of direct writes (updates, inserts, removes) that were saved in the open batch and are not committed yet. 0 when no batch is open.
+    /// </summary>
+    public int BatchWriteCount
+    {
+        get
+        {
+            lock (dbContextLock)
+            {
+                return _batchWriteCount;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Commits the open batch. On success <see cref="TotalSuccessCount"/> advances by the writes of the batch.
+    /// On failure the batch is rolled back, nothing of it counts and a <see cref="BatchWriteException"/> is thrown whose
+    /// <see cref="BatchWriteException.PendingOperationCount"/> is the number of writes that were lost. No batch is open afterwards in both cases.
+    /// </summary>
+    public void CommitBatch()
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("CommitBatch called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            var transaction = _batchTransaction ?? throw new InvalidOperationException("CommitBatch called without an open batch.");
+            int writes = _batchWriteCount;
+            try
+            {
+                transaction.Commit();
+            }
+#pragma warning disable CA1031 // Every failure of the commit has the same consequence
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                CloseBatch(transaction);
+                _logger.LogError(ex, "Committing a batch of {WriteCount} writes failed. The batch was rolled back.", writes);
+                throw new BatchWriteException($"Committing a batch of {writes} writes to the database failed: {ex.Message}", writes, ex);
+            }
+            TotalSuccessCount += _batchSuccessCount;
+            CloseBatch(transaction);
+        }
+    }
+
+    /// <summary>
+    /// Rolls the open batch back. Nothing of it is written and nothing counts. Does nothing when no batch is open.
+    /// </summary>
+    public void RollbackBatch()
+    {
+        lock (dbContextLock)
+        {
+            if (_batchTransaction is not null)
+            {
+                CloseBatch(_batchTransaction);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ends the batch state. Disposing a transaction that was not committed rolls it back. Must be called with the lock held.
+    /// </summary>
+    private void CloseBatch(Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
+    {
+        _batchTransaction = null;
+        _batchSuccessCount = 0;
+        _batchWriteCount = 0;
+        try
+        {
+            transaction.Dispose();
+        }
+#pragma warning disable CA1031 // The batch is over either way
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            _logger.LogWarning(ex, "Closing the batch transaction failed.");
+        }
+        _dbContext?.ChangeTracker.Clear();
+    }
+
+    /// <summary>
+    /// A direct write was saved. Inside a batch it is only counted at the commit. Must be called with the lock held.
+    /// </summary>
+    private void RecordWrite(bool countsAsSuccess)
+    {
+        if (_batchTransaction is not null)
+        {
+            _batchWriteCount++;
+            if (countsAsSuccess)
+            {
+                _batchSuccessCount++;
+            }
+        }
+        else if (countsAsSuccess)
+        {
             TotalSuccessCount++;
         }
     }
@@ -832,6 +1018,11 @@ public class ScanJobDBInserts : IDisposable
                 {
                     lock (dbContextLock)
                     {
+                        if (_batchTransaction is not null)
+                        {
+                            _logger.LogWarning("ScanJobDBInserts is disposed with an open batch ({WriteCount} writes). The batch is rolled back.", _batchWriteCount);
+                            RollbackBatch();
+                        }
                         if (_pending.Count > 0)
                         {
                             // Last resort. A runner should have called WriteChanges before.
