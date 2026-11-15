@@ -25,7 +25,8 @@ public class ScanService : BasicService<ScanService>, IScanService
 
         if (ServiceState == IService.EServiceState.idle)
         {
-            var sr = new ScanRunnerSingleThread(scanJobDTO, _serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), _serviceProvider);
+            // One runner class: it runs the sequential scan for HashWorkers = 1 and the pipeline for more
+            var sr = new ScanRunner(scanJobDTO, _serviceProvider.GetService<ILogger<ScanRunner>>(), _serviceProvider);
             base.Start(sr);
         }
     }

@@ -3,6 +3,7 @@
 
 using System;
 using System.Globalization;
+using System.Threading;
 using Microsoft.Extensions.Logging;
 
 namespace RogerBriggen.MyDupFinderLib;
@@ -29,7 +30,10 @@ public enum ThroughputStage
 /// Counts files and bytes of a run, measures the time spent per stage and logs a progress line
 /// from time to time. There is no timer thread: the runner calls <see cref="LogProgressIfDue"/>
 /// after each file and the line is only written when the interval has elapsed.
-/// Not thread safe, use it from the thread that runs the job.
+/// Thread safe: the scan pipeline (several hash workers) uses one tracker from several threads. The file and byte counters and the state of the
+/// progress line are protected by one lock (an uncontended lock costs about 20 ns, negligible against the work per file), the stage times are added with
+/// <see cref="Interlocked"/>. With several threads the time of a stage is the sum over all threads, so it can exceed <see cref="Elapsed"/>
+/// (for example the hash time of 4 workers that were busy for 10 s each is 40 s).
 /// </summary>
 public sealed class ThroughputTracker
 {
@@ -38,9 +42,13 @@ public sealed class ThroughputTracker
     private readonly ILogger _logger;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _logInterval;
-    private readonly TimeSpan[] _stageTimes = new TimeSpan[Enum.GetValues<ThroughputStage>().Length];
+    private readonly long[] _stageTicks = new long[Enum.GetValues<ThroughputStage>().Length];
     private readonly long _startTimestamp;
+    private readonly object _sync = new object();
 
+    // Guarded by _sync (_lastLogTimestamp is also read without the lock for the cheap "not due yet" check)
+    private long _files;
+    private long _bytesHashed;
     private long _lastLogTimestamp;
     private long _lastLogFiles;
     private long _lastLogBytes;
@@ -61,13 +69,31 @@ public sealed class ThroughputTracker
     /// Number of files handled so far. This includes files that were skipped (already in the database,
     /// unchanged) and files that failed, so it is the progress through the file list.
     /// </summary>
-    public long Files { get; private set; }
+    public long Files
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _files;
+            }
+        }
+    }
 
     /// <summary>
     /// Sum of the sizes of the files that were actually read and hashed successfully.
     /// Skipped, unchanged and failed files add nothing here.
     /// </summary>
-    public long BytesHashed { get; private set; }
+    public long BytesHashed
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _bytesHashed;
+            }
+        }
+    }
 
     /// <summary>
     /// Wall clock time since the tracker was created.
@@ -78,8 +104,9 @@ public sealed class ThroughputTracker
     /// Accumulated time of one stage. Stages are measured by the caller with <see cref="StartStage"/> and
     /// <see cref="EndStage"/>, so the sum of all stages is less than <see cref="Elapsed"/>
     /// (the rest is time that no stage claims, for example sleeping in the throttle).
+    /// When several threads measure the same stage (several hash workers) the value is the sum over all of them and can exceed <see cref="Elapsed"/>.
     /// </summary>
-    public TimeSpan GetStageTime(ThroughputStage stage) => _stageTimes[(int)stage];
+    public TimeSpan GetStageTime(ThroughputStage stage) => TimeSpan.FromTicks(Interlocked.Read(ref _stageTicks[(int)stage]));
 
     /// <summary>
     /// Counts one handled file.
@@ -87,8 +114,11 @@ public sealed class ThroughputTracker
     /// <param name="bytesHashed">Size of the file when it was hashed, 0 when it was skipped or failed.</param>
     public void AddFile(long bytesHashed = 0)
     {
-        Files++;
-        BytesHashed += bytesHashed;
+        lock (_sync)
+        {
+            _files++;
+            _bytesHashed += bytesHashed;
+        }
     }
 
     /// <summary>
@@ -99,36 +129,52 @@ public sealed class ThroughputTracker
     /// <summary>
     /// Adds the time since <paramref name="startTimestamp"/> to the stage.
     /// </summary>
-    public void EndStage(ThroughputStage stage, long startTimestamp) => _stageTimes[(int)stage] += _timeProvider.GetElapsedTime(startTimestamp);
+    public void EndStage(ThroughputStage stage, long startTimestamp) => Interlocked.Add(ref _stageTicks[(int)stage], _timeProvider.GetElapsedTime(startTimestamp).Ticks);
 
     /// <summary>
     /// Writes a progress line when at least the log interval has passed since the last one (or since the start).
-    /// The rates in the line are calculated over the time since the last line.
+    /// The rates in the line are calculated over the time since the last line. When several threads call it at the same moment, only one of them writes the line.
     /// </summary>
     /// <returns>true when a line was written</returns>
     public bool LogProgressIfDue()
     {
         long now = _timeProvider.GetTimestamp();
-        TimeSpan sinceLast = _timeProvider.GetElapsedTime(_lastLogTimestamp, now);
-        if (sinceLast < _logInterval)
+        // Cheap check without the lock, the common case
+        if (_timeProvider.GetElapsedTime(Volatile.Read(ref _lastLogTimestamp), now) < _logInterval)
         {
             return false;
         }
 
-        double seconds = sinceLast.TotalSeconds;
-        double filesPerSecond = (Files - _lastLogFiles) / seconds;
-        double megabytesPerSecond = (BytesHashed - _lastLogBytes) / BytesPerMegabyte / seconds;
+        long files;
+        long bytes;
+        double seconds;
+        double filesPerSecond;
+        double megabytesPerSecond;
+        lock (_sync)
+        {
+            TimeSpan sinceLast = _timeProvider.GetElapsedTime(_lastLogTimestamp, now);
+            if (sinceLast < _logInterval)
+            {
+                // Another thread wrote the line in the meantime
+                return false;
+            }
+            files = _files;
+            bytes = _bytesHashed;
+            seconds = sinceLast.TotalSeconds;
+            filesPerSecond = (files - _lastLogFiles) / seconds;
+            megabytesPerSecond = (bytes - _lastLogBytes) / BytesPerMegabyte / seconds;
+            _lastLogFiles = files;
+            _lastLogBytes = bytes;
+            Volatile.Write(ref _lastLogTimestamp, now);
+        }
+
         _logger.LogInformation(
             "Progress: {files} files, {megabytes} MB hashed in total. Last {seconds} s: {filesPerSecond} files/s, {megabytesPerSecond} MB/s",
-            Files,
-            Format(BytesHashed / BytesPerMegabyte),
+            files,
+            Format(bytes / BytesPerMegabyte),
             Format(seconds),
             Format(filesPerSecond),
             Format(megabytesPerSecond));
-
-        _lastLogTimestamp = now;
-        _lastLogFiles = Files;
-        _lastLogBytes = BytesHashed;
         return true;
     }
 
@@ -140,13 +186,20 @@ public sealed class ThroughputTracker
     {
         TimeSpan elapsed = Elapsed;
         double seconds = elapsed.TotalSeconds;
-        double filesPerSecond = seconds > 0 ? Files / seconds : 0;
-        double megabytesPerSecond = seconds > 0 ? BytesHashed / BytesPerMegabyte / seconds : 0;
+        long files;
+        long bytesHashed;
+        lock (_sync)
+        {
+            files = _files;
+            bytesHashed = _bytesHashed;
+        }
+        double filesPerSecond = seconds > 0 ? files / seconds : 0;
+        double megabytesPerSecond = seconds > 0 ? bytesHashed / BytesPerMegabyte / seconds : 0;
         return string.Format(
             CultureInfo.InvariantCulture,
             "{0} files, {1} MB hashed in {2} s. Average {3} files/s, {4} MB/s. Stage time: enumerate={5} s, hash={6} s, database={7} s",
-            Files,
-            Format(BytesHashed / BytesPerMegabyte),
+            files,
+            Format(bytesHashed / BytesPerMegabyte),
             Format(seconds),
             Format(filesPerSecond),
             Format(megabytesPerSecond),

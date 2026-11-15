@@ -24,7 +24,7 @@ internal static class ScanTestRunner
     /// Runs the job to the end and returns the runner (its state and Throughput can be looked at afterwards).
     /// The database is closed again when this returns.
     /// </summary>
-    public static ScanRunnerSingleThread Run(MyDupFinderScanJobDTO job, ILoggerProvider? loggerProvider = null, LogLevel minimumLevel = LogLevel.Information)
+    public static ScanRunner Run(MyDupFinderScanJobDTO job, ILoggerProvider? loggerProvider = null, LogLevel minimumLevel = LogLevel.Information)
     {
         var services = new ServiceCollection();
         services.AddLogging(builder =>
@@ -36,7 +36,7 @@ internal static class ScanTestRunner
             }
         });
         using var serviceProvider = services.BuildServiceProvider();
-        var runner = new ScanRunnerSingleThread(job, serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider);
+        var runner = new ScanRunner(job, serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider);
         runner.Start(CancellationToken.None);
         return runner;
     }
