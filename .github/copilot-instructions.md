@@ -108,3 +108,19 @@ The console app accepts commands:
 - xUnit (testing)
 - Coverlet (code coverage)
 - ReportGenerator (coverage reports)
+
+
+## Agent instructions (all)
+
+- always work in a worktree for code changes
+
+## Claude instructions
+
+- Use Fable 5.2 as orchestrator and for reviewing.
+- Use Sonnet 5.5 for implementation
+- Always use /codex-review before commiting
+
+## Codex instructions
+
+- Use GPT 6.1 Sol as orchestrator and for reviewing.
+- Use GPT 6.1 Luna for implementation
