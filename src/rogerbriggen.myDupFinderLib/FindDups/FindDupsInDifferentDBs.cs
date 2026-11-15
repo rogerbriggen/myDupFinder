@@ -17,6 +17,27 @@ namespace RogerBriggen.MyDupFinderLib;
 /// (FindOnlyDups) or fully categorizes Duplicate / Moved / Changed / Missing / New
 /// (FindDupsTheWholeLot). Paired rows (both sides of a Duplicate, Changed, or
 /// Moved relationship) share a GroupId so a UI can collapse them together.
+/// <para>
+/// Grouping and pairing rules. The database returns the rows of each side in one total order: hash, then path
+/// (<c>FilenameAndPath</c>), then primary key (binary comparison of the text). The GroupIds are handed out in the order
+/// described below, starting with 1. The report writer sorts afterwards (category, GroupId, source, path) and does not change
+/// the GroupIds. The report does not depend on the order in which the rows were inserted.
+/// </para>
+/// <list type="bullet">
+/// <item><description><c>FindOnlyDups</c>: the base rows whose (non-empty) hash exists in the second database, in the order above.
+/// One GroupId per hash, handed out at the first row of the hash: the smallest reported hash gets 1. Only the base side is reported.</description></item>
+/// <item><description><c>FindDupsTheWholeLot</c>, the relative path of a row is its path without <c>PathBase</c>, compared ignoring case.
+/// Phase 1 (pairing by relative path): the rows of the second database are put in a dictionary by relative path; if several rows
+/// have the same relative path, <b>the last one in the order above wins</b> (the one with the largest hash, then path, then key), the
+/// others cannot be paired by path. Then the base rows are visited in the order above: <b>the first base row of a relative path
+/// takes the second row</b> (so for several base rows with the same relative path it is the one with the smallest hash, then path,
+/// then key), later base rows of the same relative path find the second row taken. Each pair gets the next GroupId and is
+/// <c>Duplicate</c> if the hashes are equal (rows without a hash count as equal) and <c>Changed</c> otherwise.
+/// Phase 2 (by hash): the base rows and second rows that are left over and have a non-empty hash are grouped by hash. For
+/// every hash that occurs on both sides, in the order of the first base row of the hash, one GroupId is used for all base and
+/// all second rows of the hash: <c>Moved</c>. Phase 3: the base rows left over get the next GroupId each (in the order above):
+/// <c>Missing</c>. Phase 4: the second rows left over, likewise: <c>New</c>.</description></item>
+/// </list>
 /// </summary>
 internal class FindDupsInDifferentDBs : BasicRunner<FindDupsInDifferentDBs>, IFindDupsRunner
 {

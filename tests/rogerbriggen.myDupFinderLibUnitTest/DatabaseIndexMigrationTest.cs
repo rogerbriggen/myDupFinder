@@ -331,15 +331,9 @@ public class DatabaseIndexMigrationTest : IDisposable
             ("FindDupsInSameDB", QueryPlanHelper.Describe(path, c => DubFinderDB.FindDupsInSameDB(c))),
             ("GetAllScanItems", QueryPlanHelper.Describe(path, c => DubFinderDB.GetAllScanItems(c))),
         };
-        var capture = new SqlCaptureInterceptor();
-        using (var context = QueryPlanHelper.CreateCapturingContext(path, capture))
-        using (var secondContext = QueryPlanHelper.CreateCapturingContext(second, capture))
-        {
-            DubFinderDB.FindDupsInDifferentDBs(context, secondContext);
-        }
-        Assert.Equal(2, capture.Commands.Count);
-        plans.Add(("FindDupsInDifferentDBs (1, second db: distinct hashes)", capture.Commands[0].Sql.Trim() + Environment.NewLine + QueryPlanHelper.ExplainSql(second, capture.Commands[0])));
-        plans.Add(("FindDupsInDifferentDBs (2, base db: Contains)", capture.Commands[1].Sql.Trim() + Environment.NewLine + QueryPlanHelper.ExplainSql(path, capture.Commands[1])));
+        // Since step 5 the second database is attached to the connection of the base database and one query uses both hash indexes
+        string attachedPlan = QueryPlanHelper.ExplainWithAttached(path, second, c => DubFinderDB.FindDupsInDifferentDBs(c, second), "EXISTS (SELECT 1 FROM dupfinder_second", out var attachedCommand);
+        plans.Add(("FindDupsInDifferentDBs (second database attached)", attachedCommand.Sql.Trim() + Environment.NewLine + attachedPlan));
 
         foreach (var (name, plan) in plans)
         {
