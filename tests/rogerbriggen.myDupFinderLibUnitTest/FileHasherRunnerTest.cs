@@ -78,10 +78,10 @@ public class FileHasherRunnerTest : IDisposable
         TrustDirectoryMetadata = trust,
     };
 
-    private ScanRunnerSingleThread RunScan(FileHasher? hasher, bool trust = false, ListLoggerProvider? log = null, CancellationToken token = default)
+    private ScanRunner RunScan(FileHasher? hasher, bool trust = false, ListLoggerProvider? log = null, CancellationToken token = default)
     {
         using var serviceProvider = BuildServices(log);
-        var runner = new ScanRunnerSingleThread(ScanJob(trust), serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, null, null, hasher);
+        var runner = new ScanRunner(ScanJob(trust), serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, null, null, hasher);
         runner.Start(token);
         SqliteConnection.ClearAllPools();
         return runner;

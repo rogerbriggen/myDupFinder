@@ -293,7 +293,7 @@ public class TrustDirectoryMetadataTest : IDisposable
         var (changed, listing) = ScanTreeAndSnapshotListing();
         var wrong = listing.Select(f => f.FullPath == changed ? new FileEntryInfo(f.FullPath, f.Length + 1000, f.CreationTimeUtc, f.LastWriteTimeUtc) : f).ToList();
         using var serviceProvider = BuildServices();
-        var runner = new ScanRunnerSingleThread(ScanJob(), serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, null, SourceOf(wrong));
+        var runner = new ScanRunner(ScanJob(), serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, null, SourceOf(wrong));
 
         runner.Start(CancellationToken.None);
 
@@ -312,7 +312,7 @@ public class TrustDirectoryMetadataTest : IDisposable
         string first = listing[0].FullPath;
         var stale = listing.Select(f => f.FullPath == first ? new FileEntryInfo(f.FullPath, 1, f.CreationTimeUtc, new DateTime(1990, 1, 1, 0, 0, 0, DateTimeKind.Utc)) : f).ToList();
         using var serviceProvider = BuildServices();
-        var runner = new ScanRunnerSingleThread(ScanJob(), serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, null, SourceOf(stale));
+        var runner = new ScanRunner(ScanJob(), serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, null, SourceOf(stale));
 
         runner.Start(CancellationToken.None);
         SqliteConnection.ClearAllPools();
@@ -332,7 +332,7 @@ public class TrustDirectoryMetadataTest : IDisposable
         var listedTime = new DateTime(1990, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         var stale = listing.Select(f => f.FullPath == first ? new FileEntryInfo(f.FullPath, f.Length, f.CreationTimeUtc, listedTime) : f).ToList();
         using var serviceProvider = BuildServices();
-        var runner = new ScanRunnerSingleThread(ScanJob(trust: true), serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, null, SourceOf(stale));
+        var runner = new ScanRunner(ScanJob(trust: true), serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, null, SourceOf(stale));
 
         runner.Start(CancellationToken.None);
         SqliteConnection.ClearAllPools();
@@ -386,7 +386,7 @@ public class TrustDirectoryMetadataTest : IDisposable
         File.Delete(vanished);
         var log = new ListLoggerProvider();
         using var serviceProvider = BuildServices(log);
-        var runner = new ScanRunnerSingleThread(ScanJob(), serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, null, SourceOf(listing));
+        var runner = new ScanRunner(ScanJob(), serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, null, SourceOf(listing));
 
         runner.Start(CancellationToken.None);
         SqliteConnection.ClearAllPools();

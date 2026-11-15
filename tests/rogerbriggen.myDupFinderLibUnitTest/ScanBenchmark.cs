@@ -66,7 +66,15 @@ public class ScanBenchmark : IDisposable
     /// <summary>MYDUPFINDER_BENCHMARK_TRUST=1 runs the jobs with TrustDirectoryMetadata (no call per file), otherwise the default (metadata read from each file).</summary>
     private static bool TrustDirectoryMetadata => Environment.GetEnvironmentVariable(TrustVariable) == "1";
 
-    private void WriteMode() => _output.WriteLine("Mode: " + (TrustDirectoryMetadata ? "TrustDirectoryMetadata=true (directory listing values)" : "default (metadata read from each file)"));
+    private const string WorkersVariable = "MYDUPFINDER_BENCHMARK_WORKERS";
+
+    /// <summary>MYDUPFINDER_BENCHMARK_WORKERS=n runs the scan jobs of the benchmarks with HashWorkers = n (default 1: the sequential scan; more: the pipeline).</summary>
+    private static int HashWorkers =>
+        int.TryParse(Environment.GetEnvironmentVariable(WorkersVariable), NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed >= 1 && parsed <= MyDupFinderScanJobDTO.MaxHashWorkers ? parsed : 1;
+
+    private void WriteMode() => _output.WriteLine(
+        "Mode: " + (TrustDirectoryMetadata ? "TrustDirectoryMetadata=true (directory listing values)" : "default (metadata read from each file)")
+        + $", HashWorkers={HashWorkers}, {Environment.ProcessorCount} logical processors");
 
     private static int GetFileCount() =>
         int.TryParse(Environment.GetEnvironmentVariable(FileCountVariable), NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed > 0 ? parsed : DefaultFileCount;
@@ -98,6 +106,7 @@ public class ScanBenchmark : IDisposable
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
             TrustDirectoryMetadata = TrustDirectoryMetadata,
+            HashWorkers = HashWorkers,
         };
         var runner = ScanTestRunner.Run(job);
 
@@ -112,6 +121,47 @@ public class ScanBenchmark : IDisposable
             Assert.Equal(tree.Files.Count, context.ScanItems!.Count());
         }
         Assert.Equal(tree.TotalBytes, runner.Throughput.BytesHashed);
+    }
+
+    /// <summary>
+    /// Many tiny files only (64 B to 512 B, no duplicates), so the scan is bound by the database and the per-file calls, not by hashing:
+    /// shows where more workers stop helping (step 7). Default: 20000 files (<c>MYDUPFINDER_BENCHMARK_FILES</c>). Run only this one with
+    /// <c>--filter "FullyQualifiedName~Scan_ManyTinyFiles"</c>.
+    /// </summary>
+    [BenchmarkFact]
+    public void Scan_ManyTinyFiles_ReportsTimings()
+    {
+        WriteMode();
+        int fileCount = GetFileCount();
+        var options = new TestTreeOptions
+        {
+            FileCount = fileCount,
+            DuplicateShare = 0,
+            DirectoryCount = Math.Max(1, fileCount / 20),
+            MaxDirectoryDepth = 4,
+            SizeBuckets = new[] { new SizeBucket(1.0, 64, 512) },
+        };
+        var tree = TestTreeGenerator.Generate(Path.Combine(_tempDir, "tree"), options);
+        _output.WriteLine(string.Format(CultureInfo.InvariantCulture, "Tree: {0} files, {1:F1} MB (not part of the scan time)", tree.Files.Count, tree.TotalBytes / (1024.0 * 1024.0)));
+
+        var job = new MyDupFinderScanJobDTO
+        {
+            JobName = "Benchmark",
+            OriginComputer = "BenchmarkPC",
+            ScanName = "Benchmark",
+            BasePath = tree.Root,
+            DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
+            ReportPath = _tempDir,
+            TrustDirectoryMetadata = TrustDirectoryMetadata,
+            HashWorkers = HashWorkers,
+        };
+        var runner = ScanTestRunner.Run(job);
+
+        _output.WriteLine("Scan: " + runner.Throughput.BuildSummary());
+        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
+        using var context = DubFinderContextFactory.CreateDubFinderContext(job.DatabaseFile);
+        Assert.Equal(0, context.ScanErrorItems!.Count());
+        Assert.Equal(tree.Files.Count, context.ScanItems!.Count());
     }
 
     /// <summary>
@@ -151,6 +201,7 @@ public class ScanBenchmark : IDisposable
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
             TrustDirectoryMetadata = TrustDirectoryMetadata,
+            HashWorkers = HashWorkers,
         };
         var firstRun = ScanTestRunner.Run(job);
         _output.WriteLine("First scan:  " + firstRun.Throughput.BuildSummary());
@@ -199,6 +250,7 @@ public class ScanBenchmark : IDisposable
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
             TrustDirectoryMetadata = TrustDirectoryMetadata,
+            HashWorkers = HashWorkers,
         };
         var scanRunner = ScanTestRunner.Run(scanJob);
         Assert.Equal(IService.EServiceState.finished, scanRunner.RunnerState);
