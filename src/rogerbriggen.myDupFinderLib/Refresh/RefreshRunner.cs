@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,9 +28,11 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     }
 
     /// <param name="dbInserts">Only for tests: a ready made object (for example with a small batch size). The runner disposes it.</param>
-    internal RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts) : base(logger, serviceProvider)
+    /// <param name="fileSource">Only for tests: where the files come from (for example with unreadable directories). Default: the real file system.</param>
+    internal RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null) : base(logger, serviceProvider)
     {
         RefreshJobDTO = refreshJobDTO;
+        _fileSource = fileSource ?? FileTreeEnumerationSource.Instance;
         ScanJobDBInserts = dbInserts ?? new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -40,6 +43,8 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
     private ScanJobDBInserts ScanJobDBInserts { get; set; }
 
+    private readonly IFileEnumerationSource _fileSource;
+
     public int AddedCount { get; private set; }
     public int UpdatedCount { get; private set; }
     public int RemovedCount { get; private set; }
@@ -47,8 +52,19 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     public int ErrorCount { get; private set; }
 
     /// <summary>
+    /// Rows that were NOT removed although their file was not enumerated, because they lie below a directory that could not be read.
+    /// Only a complete enumeration may delete: these files might well still exist.
+    /// </summary>
+    public int ProtectedCount { get; private set; }
+
+    /// <summary>
+    /// Directories that could not be read completely during the enumeration (final after the enumeration ended).
+    /// </summary>
+    public IReadOnlyList<UnreadableDirectory> UnreadableDirectories { get; private set; } = Array.Empty<UnreadableDirectory>();
+
+    /// <summary>
     /// Files, bytes and stage times of the current run. Unchanged files count as files but add no hashed bytes.
-    /// The enumerate time covers the directory listing only.
+    /// The enumerate time covers the directory listing and the metadata (size, timestamps) of the files (one call per file unless TrustDirectoryMetadata is set), the same as in scan and check.
     /// </summary>
     internal ThroughputTracker Throughput { get; private set; }
 
@@ -84,31 +100,39 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
             // Step 2: Enumerate files on disk and process them
             var filesOnDisk = new HashSet<string>(StringComparer.Ordinal);
-            IEnumerable<string> files;
-            try
-            {
-                files = Directory.EnumerateFiles(RefreshJobDTO.BasePath, "*", SearchOption.AllDirectories);
-            }
-#pragma warning disable CA1031 // Do not catch general exception types
-            catch (Exception ex)
-#pragma warning restore CA1031 // Do not catch general exception types
-            {
-                _logger.LogError(ex, "Error enumerating files in {basePath}", RefreshJobDTO.BasePath);
-                RunnerState = IService.EServiceState.finished;
-                return;
-            }
-
-            using var fileEnumerator = files.GetEnumerator();
+            using var fileEnumerator = _fileSource.Open(RefreshJobDTO.BasePath);
+            UnreadableDirectories = fileEnumerator.UnreadableDirectories;
+            int unreadableLogged = 0;
             while (true)
             {
                 long enumerateStart = Throughput.StartStage();
-                bool hasNext = fileEnumerator.MoveNext();
-                Throughput.EndStage(ThroughputStage.Enumerate, enumerateStart);
+                bool hasNext;
+                try
+                {
+                    hasNext = fileEnumerator.MoveNext();
+                }
+#pragma warning disable CA1031 // Do not catch general exception types
+                catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+                {
+                    // The base path itself cannot be listed: nothing was enumerated, so nothing may be changed in the database
+                    // (Files that were handled before the failure are written, nothing is removed.)
+                    _logger.LogError(ex, "Error enumerating files in {basePath}. No rows were removed.", RefreshJobDTO.BasePath);
+                    WriteChanges();
+                    RunnerState = IService.EServiceState.finished;
+                    return;
+                }
+                finally
+                {
+                    Throughput.EndStage(ThroughputStage.Enumerate, enumerateStart);
+                }
+                UnreadableDirectoryLog.LogNew(_logger, fileEnumerator.UnreadableDirectories, ref unreadableLogged);
                 if (!hasNext)
                 {
                     break;
                 }
-                string currentFile = fileEnumerator.Current;
+                FileEntryInfo currentEntry = fileEnumerator.Current;
+                string currentFile = currentEntry.FullPath;
 
                 //CancelToken?
                 if (CancelToken.IsCancellationRequested)
@@ -125,9 +149,19 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 long hashedBytes = 0;
                 try
                 {
-                    var fileInfo = new FileInfo(currentFile);
-                    long fileSize = fileInfo.Length;
-                    DateTime fileLastModificationUTC = File.GetLastWriteTimeUtc(currentFile);
+                    // Authoritative values from the file itself (one call) unless TrustDirectoryMetadata is set; read now, right before the file is processed
+                    long metadataStart = Throughput.StartStage();
+                    FileEntryInfo metadata;
+                    try
+                    {
+                        metadata = FileMetadata.Resolve(currentEntry, RefreshJobDTO.TrustDirectoryMetadata);
+                    }
+                    finally
+                    {
+                        Throughput.EndStage(ThroughputStage.Enumerate, metadataStart);
+                    }
+                    long fileSize = metadata.Length;
+                    DateTime fileLastModificationUTC = metadata.LastWriteTimeUtc;
 
                     if (existingByPath.TryGetValue(currentFile, out var existingItem))
                     {
@@ -170,7 +204,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                             OriginComputer = RefreshJobDTO.OriginComputer,
                             ScanName = RefreshJobDTO.ScanName,
                             ScanExecutionComputer = Environment.MachineName,
-                            FileCreationUTC = File.GetCreationTimeUtc(currentFile),
+                            FileCreationUTC = metadata.CreationTimeUtc,
                             FileLastModificationUTC = fileLastModificationUTC,
                             FileSize = fileSize
                         };
@@ -203,7 +237,12 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 discThrottle?.Throttle(CancelToken);
             }
 
-            // Step 3: Remove items from DB that no longer exist on disk
+            // Step 3: Remove items from DB that no longer exist on disk.
+            // Only here the enumeration is complete (the loop above ended because MoveNext returned false; a cancel or an error
+            // returned before), so the list of unreadable directories is final. A file below such a directory was not enumerated
+            // although it may exist, so its row must stay.
+            // (UnreadableDirectories is the live list of the enumeration, final from here on)
+            var unreadableMatcher = new UnreadableDirectoryMatcher(UnreadableDirectories.Select(d => d.Path), RefreshJobDTO.BasePath);
             foreach (var kvp in existingByPath)
             {
                 if (CancelToken.IsCancellationRequested)
@@ -217,6 +256,15 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
                 if (!filesOnDisk.Contains(kvp.Key))
                 {
+                    if (unreadableMatcher.IsProtected(kvp.Key))
+                    {
+                        ProtectedCount++;
+                        if (_logger.IsEnabled(LogLevel.Trace))
+                        {
+                            _logger.LogTrace("Refresh: Kept {file}, it lies below a directory that could not be read", kvp.Key);
+                        }
+                        continue;
+                    }
                     try
                     {
                         long dbStart = Throughput.StartStage();
@@ -240,7 +288,11 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
             WriteChanges();
             RunnerState = IService.EServiceState.finished;
-            _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+            if (UnreadableDirectories.Count > 0)
+            {
+                _logger.LogWarning("Refresh: {count} directories could not be read completely. {kept} database rows below them were kept (not removed, even if the file is gone). Directories: {directories}", UnreadableDirectories.Count, ProtectedCount, UnreadableDirectoryLog.Join(UnreadableDirectories));
+            }
+            _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} KeptBecauseDirectoryUnreadable={kept} UnreadableDirectories={unreadable}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, ProtectedCount, UnreadableDirectories.Count);
             Throughput.LogSummary("Refresh finished");
         }
         catch (BatchWriteException ex)

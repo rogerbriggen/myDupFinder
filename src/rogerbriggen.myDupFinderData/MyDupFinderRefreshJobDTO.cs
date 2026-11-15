@@ -23,6 +23,15 @@ public class MyDupFinderRefreshJobDTO
     /// </summary>
     public uint ThrottlePercent { get; set; }
 
+    /// <summary>
+    /// false (the default, also used when the element is missing in the project file): for every file the job reads size, creation time and last write time
+    /// from the file itself (one call per file) and decides and stores with these values. This is always correct.
+    /// true: the job uses the size and timestamps from the directory listing and makes no call per file. That is faster on network shares and large hard disk archives,
+    /// but NTFS can leave the directory entry of a hard link stale when the file was changed through another link (also after writing has finished).
+    /// A change made that way can then be missed by refresh (the file counts as unchanged, the old hash stays) and by check without hash check (reported Ok).
+    /// Only recommended for trees without hard links.
+    /// </summary>
+    public bool TrustDirectoryMetadata { get; set; }
     public static void CheckSanity(MyDupFinderRefreshJobDTO dto)
     {
         if (string.IsNullOrWhiteSpace(dto.JobName))

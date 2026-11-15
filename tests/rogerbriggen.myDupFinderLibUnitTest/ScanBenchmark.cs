@@ -6,7 +6,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using RogerBriggen.MyDupFinderData;
 using RogerBriggen.MyDupFinderDB;
 using RogerBriggen.MyDupFinderLib;
@@ -58,12 +61,20 @@ public class ScanBenchmark : IDisposable
         }
     }
 
+    private const string TrustVariable = "MYDUPFINDER_BENCHMARK_TRUST";
+
+    /// <summary>MYDUPFINDER_BENCHMARK_TRUST=1 runs the jobs with TrustDirectoryMetadata (no call per file), otherwise the default (metadata read from each file).</summary>
+    private static bool TrustDirectoryMetadata => Environment.GetEnvironmentVariable(TrustVariable) == "1";
+
+    private void WriteMode() => _output.WriteLine("Mode: " + (TrustDirectoryMetadata ? "TrustDirectoryMetadata=true (directory listing values)" : "default (metadata read from each file)"));
+
     private static int GetFileCount() =>
         int.TryParse(Environment.GetEnvironmentVariable(FileCountVariable), NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed > 0 ? parsed : DefaultFileCount;
 
     [BenchmarkFact]
     public void Scan_GeneratedTree_ReportsTimings()
     {
+        WriteMode();
         int fileCount = GetFileCount();
         var options = new TestTreeOptions { FileCount = fileCount, DuplicateShare = 0.2, DirectoryCount = Math.Max(1, fileCount / 20), MaxDirectoryDepth = 4 };
 
@@ -86,6 +97,7 @@ public class ScanBenchmark : IDisposable
             BasePath = tree.Root,
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
+            TrustDirectoryMetadata = TrustDirectoryMetadata,
         };
         var runner = ScanTestRunner.Run(job);
 
@@ -110,6 +122,7 @@ public class ScanBenchmark : IDisposable
     [BenchmarkFact]
     public void Rescan_GeneratedTree_ReportsResumeTimings()
     {
+        WriteMode();
         int fileCount = GetFileCount();
         var options = new TestTreeOptions
         {
@@ -137,6 +150,7 @@ public class ScanBenchmark : IDisposable
             BasePath = tree.Root,
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
+            TrustDirectoryMetadata = TrustDirectoryMetadata,
         };
         var firstRun = ScanTestRunner.Run(job);
         _output.WriteLine("First scan:  " + firstRun.Throughput.BuildSummary());
@@ -152,5 +166,79 @@ public class ScanBenchmark : IDisposable
         using var context = DubFinderContextFactory.CreateDubFinderContext(job.DatabaseFile);
         Assert.Equal(0, context.ScanErrorItems!.Count());
         Assert.Equal(tree.Files.Count, context.ScanItems!.Count());
+    }
+
+    /// <summary>
+    /// Check benchmark for IgnoreBasePath (step 4 of the plan): scans a generated tree, renames the tree directory and checks it
+    /// with IgnoreBasePath, so no path matches exactly and every file has to be found by its relative path. The hash check is
+    /// switched off (the files are not read), so the time is mostly the lookup of the rows. Run only this one with
+    /// <c>--filter "FullyQualifiedName~Check_IgnoreBasePath"</c>. Default: 20000 files.
+    /// </summary>
+    [BenchmarkFact]
+    public void Check_IgnoreBasePath_MovedTree_ReportsTimings()
+    {
+        WriteMode();
+        int fileCount = int.TryParse(Environment.GetEnvironmentVariable(FileCountVariable), NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed > 0 ? parsed : 20000;
+        var options = new TestTreeOptions
+        {
+            FileCount = fileCount,
+            DuplicateShare = 0.2,
+            DirectoryCount = Math.Max(1, fileCount / 20),
+            MaxDirectoryDepth = 4,
+            SizeBuckets = new[] { new SizeBucket(0.9, 64, 4 * 1024), new SizeBucket(0.1, 4 * 1024, 64 * 1024) },
+        };
+        string originalRoot = Path.Combine(_tempDir, "tree");
+        string movedRoot = Path.Combine(_tempDir, "tree_moved");
+        var tree = TestTreeGenerator.Generate(originalRoot, options);
+        var scanJob = new MyDupFinderScanJobDTO
+        {
+            JobName = "Benchmark",
+            OriginComputer = "BenchmarkPC",
+            ScanName = "Benchmark",
+            BasePath = originalRoot,
+            DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
+            ReportPath = _tempDir,
+            TrustDirectoryMetadata = TrustDirectoryMetadata,
+        };
+        var scanRunner = ScanTestRunner.Run(scanJob);
+        Assert.Equal(IService.EServiceState.finished, scanRunner.RunnerState);
+        Assert.Equal(tree.Files.Count, scanRunner.Throughput.Files);
+        Directory.Move(originalRoot, movedRoot);
+
+        var checkJob = new MyDupFinderCheckJobDTO
+        {
+            ScanJobDTO = new MyDupFinderScanJobDTO
+            {
+                JobName = "Benchmark",
+                OriginComputer = "BenchmarkPC",
+                ScanName = "Benchmark",
+                BasePath = movedRoot,
+                DatabaseFile = scanJob.DatabaseFile,
+                ReportPath = _tempDir,
+                TrustDirectoryMetadata = TrustDirectoryMetadata,
+            },
+            IgnoreBasePath = true,
+            SkipHashCheck = true,
+        };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        using var serviceProvider = services.BuildServiceProvider();
+        using var runner = new CheckRunner(checkJob, serviceProvider.GetService<ILogger<CheckRunner>>(), serviceProvider);
+        var stopwatch = Stopwatch.StartNew();
+        runner.Start(CancellationToken.None);
+        stopwatch.Stop();
+
+        _output.WriteLine(string.Format(
+            CultureInfo.InvariantCulture,
+            "Check IgnoreBasePath, {0} files in a moved tree: {1:F2} s total. {2}",
+            tree.Files.Count,
+            stopwatch.Elapsed.TotalSeconds,
+            runner.Throughput.BuildSummary()));
+        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
+        // Every file was found by its relative path: nothing is new, nothing is missing, all are reported as moved
+        Assert.Equal(0, runner.NewOnDiskCount);
+        Assert.Equal(0, runner.MissingOnDiskCount);
+        Assert.Equal(tree.Files.Count, runner.ModifiedNoHashChangeCount);
+        Assert.Equal(0, runner.ErrorCount);
     }
 }

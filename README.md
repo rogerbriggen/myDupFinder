@@ -94,6 +94,7 @@ The application is configured through an XML project file. You can generate an e
       <DatabaseFile>m:\finddupdb\base.db</DatabaseFile>
       <ReportPath>m:\finddupdb\</ReportPath>
       <ThrottlePercent>0</ThrottlePercent>
+      <TrustDirectoryMetadata>false</TrustDirectoryMetadata>
     </MyDupFinderScanJobDTO>
   </MyDupFinderScanJobDTOs>
 
@@ -108,6 +109,7 @@ The application is configured through an XML project file. You can generate an e
         <DatabaseFile>m:\finddupdb\base.db</DatabaseFile>
         <ReportPath>m:\finddupdb\</ReportPath>
         <ThrottlePercent>0</ThrottlePercent>
+        <TrustDirectoryMetadata>false</TrustDirectoryMetadata>
       </ScanJobDTO>
       <IgnoreBasePath>false</IgnoreBasePath>
       <SkipHashCheck>true</SkipHashCheck>
@@ -135,6 +137,7 @@ The application is configured through an XML project file. You can generate an e
       <DatabaseFile>m:\finddupdb\base.db</DatabaseFile>
       <ReportPath>m:\finddupdb\</ReportPath>
       <ThrottlePercent>0</ThrottlePercent>
+      <TrustDirectoryMetadata>false</TrustDirectoryMetadata>
     </MyDupFinderRefreshJobDTO>
   </MyDupFinderRefreshJobDTOs>
 
@@ -144,7 +147,9 @@ The application is configured through an XML project file. You can generate an e
 ### Throttling, progress and logging
 
 - **`ThrottlePercent`** (scan, refresh and the scan part of check jobs): `0` to `70`, default `0` = no throttling. The element may be left out. With a value above 0 the job sleeps for that share of its working time, but only after it has worked for 5 minutes, to spare an old hard disk. Values above 70 are rejected.
-- **Progress:** every 10 seconds the scan, refresh and check jobs write one line with the number of files, the hashed megabytes and the files/s and MB/s of the last interval, and a summary with the time per stage (enumerate, hash, database) when they finish or are cancelled.
+- **Progress:** every 10 seconds the scan, refresh and check jobs write one line with the number of files, the hashed megabytes and the files/s and MB/s of the last interval, and a summary with the time per stage (enumerate, hash, database) when they finish or are cancelled. The `enumerate` time means the same in all three jobs: the directory listing plus the size and timestamps of the files (one call per file, see `TrustDirectoryMetadata`).
+- **Directories that cannot be read** (access denied, I/O or network error, directory vanished during the walk): scan, refresh and check log a warning for each of them, go on with the rest and name them again in the final summary. The files below such a directory are not scanned or checked. A refresh does **not** remove database rows below such a directory, and a check does **not** report them as `MissingOnDisk` (the files may still be there); both count these rows in the summary line (`KeptBecauseDirectoryUnreadable`, `NotReportedMissingBecauseUnreadable`). If the base path itself cannot be listed, refresh and check log the error and change or report nothing.
+- **`TrustDirectoryMetadata`** (scan, refresh and the scan part of check jobs): `false` (default, also when the element is missing) or `true`. By default every job reads size, creation time and last write time from the file itself, with one call per file, right before it processes the file, and decides and stores with these values. That is always correct. With `true` the jobs use the values of the directory listing and make no call per file, which is faster on network shares and large hard disk archives (enumerate time of the scan benchmark: about 0.1 s instead of 0.6 s for 20000 files on a local disk, see [docs/benchmark.md](docs/benchmark.md)). **The trade-off:** on NTFS the directory entry of a hard link can keep its old size and timestamps when the file is changed through another link, also after writing has finished (observed on Windows 11). With `true`, refresh then counts such a file as unchanged and keeps the old hash, and check without hash check (`SkipHashCheck`) reports it as Ok. Only set `true` for trees without hard links where the per-file call is expensive. Even with the default, do not scan, refresh or check files that are being written.
 - **Database state:** after opening the database the jobs log `journal_mode`, `synchronous` and the indexes of the `ScanItems` table once. Nothing is changed.
 - **Per-file messages** (a file was hashed, added, updated, removed, is new/modified/missing in a check) are written at log level `Trace`, which the default configuration does not write. Errors and warnings per file are always written. To see the per-file messages, configure the minimum level `Verbose` (Serilog) / `Trace`.
 - To measure how fast a scan is, see [docs/benchmark.md](docs/benchmark.md).
