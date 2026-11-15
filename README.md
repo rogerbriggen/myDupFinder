@@ -67,7 +67,7 @@ myDupFinder exampleproject projectfile.xml
 # Validate a project file without running (dry run)
 myDupFinder dryrun projectfile.xml
 
-# Run the duplicate finder with a project file (executes all scan, check, find-dups, and refresh jobs)
+# Run the duplicate finder with a project file (executes all scan, refresh, find-dups, and check jobs, in this order)
 myDupFinder run projectfile.xml
 
 # Apply a check report back to the database referenced in its header
@@ -144,6 +144,15 @@ The application is configured through an XML project file. You can generate an e
 
 </MyDupFinderProjectDTO>
 ```
+
+### Order of the jobs
+
+`run` executes the jobs of a project file in a fixed order, not in the order of the XML elements: **scan jobs, then refresh jobs, then find-duplicates jobs, then check jobs**. Within one type the jobs run in the order of the project file. The jobs that change databases (scan, refresh) run first, the jobs that only read them (find-duplicates, check) after them, so a find-duplicates report of a project always shows the database after the scan and refresh jobs of the same project. A check job runs last, after the refresh jobs: it compares the files with the database as it is after the refresh, so a project that wants to *see* the changes since the last scan in a check report must not refresh the same database in the same run (use two project files). All jobs are validated before the first one starts.
+
+### Database files and report files
+
+- **`DatabaseFile` / `DatabaseFileBase`** may be an absolute path, a relative path or a bare file name such as `scan.db`. A relative path is resolved against the current directory of the process, the missing directories are created, and the database is opened at exactly that full path. Characters like `;`, `=`, `'` or spaces in the path are fine.
+- **A find-duplicates report is never overwritten.** The report file is `<ReportPath><JobName> dupReport.csv` (`ReportPath` with or without a trailing separator gives the same file). If it already exists, the project is rejected before it runs; if it appears while the job runs, the job writes nothing, leaves the existing file as it is and logs an error. Remove or rename the old report to run the job again.
 
 ### Throttling, progress and logging
 
@@ -261,9 +270,13 @@ Two flags tune behavior:
 
 `applyCheck` reads a check CSV and applies the changes to the database recorded in the CSV header:
 
-- **BitRotSuspect / Modified / ModifiedNoHashChange** rows update size, modification date, hash, and last-scan date. When `PathMoved=true`, the path is rewritten as well. Hashes are taken straight from the CSV — no re-hashing.
-- **MissingOnDisk** rows remove the matching database entry.
-- **NewOnDisk** rows insert a new database entry using the hash captured during check. Rows without a hash (produced by a `SkipHashCheck` run) are skipped.
+- **BitRotSuspect / Modified / ModifiedNoHashChange** rows update size, modification date, hash, and last-scan date **together**. When `PathMoved=true`, the path is rewritten as well. Hashes are taken straight from the CSV — no re-hashing. A hash in the database always belongs to the size and modification date stored with it, so size and modification date are never written without the hash from the same row.
+- **MissingOnDisk** rows remove the matching database entry. A row that is already gone is skipped.
+- **NewOnDisk** rows insert a new database entry using the hash captured during check. Rows without a hash (produced by a `SkipHashCheck` run) are skipped. The row is only inserted if no row with exactly this path exists: if one exists with the same hash, size and modification date, the report was applied before and the row is counted as "already applied"; if one exists with other values, the row is skipped with a warning (the report is out of date for this file, run the check again).
+
+**A report from a `SkipHashCheck` run.** Such a report has no hashes. A row of a file whose size or modification date changed (category `Modified`) is **not applied** (warning with the file name, counted as "without hash" in the summary): applying the new size and date while keeping the old hash would make a refresh believe that the stored hash is current, and it would never hash the file again. Run a check with hashing and apply that report instead, or run a refresh. This also applies to a `Modified` row with `PathMoved=true`: nothing of that row is applied, not even the new path; the next check with hashing reports it completely. The only hashless rows that are applied are rows of files that were only moved (`PathMoved=true`, size and modification date on disk equal the database row): they get their new path and base path, nothing else changes. `NewOnDisk` rows without a hash are skipped as before.
+
+**Running it twice.** Applying the same report again is safe: inserts are skipped when the file is already there, updates write the same values again (only the last-scan dates move), and a removed row is skipped the second time. The rows are applied in database transactions of 500 report rows. A row that fails is logged and counted as an error and the other rows of its transaction are still applied. If a commit fails, the rows of that transaction are rolled back, an error names the number of report rows it covered, and they are counted as errors. If the process crashes, at most the open transaction (up to 500 rows) is lost; apply the same report again and only what is missing is applied. The summary line shows `Updated`, `Inserted`, `Removed`, `AlreadyApplied`, `Skipped` (of which `without hash`), `Errors` and `FailedCommits`; the counters only contain what was committed.
 
 Before running `applyCheck`, open the CSV and delete any row you do not want applied — for instance a `BitRotSuspect` you want to investigate manually first. Anything left in the CSV will be applied.
 

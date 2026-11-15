@@ -31,7 +31,7 @@ public class DubFinderDB : IDisposable
     {
         lock (dbContextLock)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(databaseFile) ?? "");
+            databaseFile = DatabaseLocation.PrepareDatabaseFile(databaseFile);
             _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile);
             _dbContext = new DubFinderContext(_dbContextOptions);
             DatabaseMigrator.Migrate(_dbContext, _logger, databaseFile);

@@ -285,6 +285,17 @@ public class DatabaseIndexMigrationTest : IDisposable
     }
 
     [Fact]
+    public void QueryPlan_GetItemsByExactPath_UsesFilenameAndPathIndex()
+    {
+        string path = CreateMigratedDatabase();
+
+        string plan = QueryPlanHelper.Explain(path, c => ScanJobDBInserts.GetItemsByExactPath(c, BasePath + "a.txt"));
+
+        _output.WriteLine(plan);
+        AssertUsesFilenameAndPathIndex(plan);
+    }
+
+    [Fact]
     public void QueryPlan_IsAlreadyInDB_Count_ReturnsMatchesAndStillWorksWithTheIndex()
     {
         string path = CreateMigratedDatabase();
