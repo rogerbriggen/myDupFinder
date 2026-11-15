@@ -67,7 +67,7 @@ myDupFinder exampleproject projectfile.xml
 # Validate a project file without running (dry run)
 myDupFinder dryrun projectfile.xml
 
-# Run the duplicate finder with a project file (executes all scan, check, find-dups, and refresh jobs)
+# Run the duplicate finder with a project file (executes all scan, refresh, find-dups, and check jobs, in this order)
 myDupFinder run projectfile.xml
 
 # Apply a check report back to the database referenced in its header
@@ -144,6 +144,15 @@ The application is configured through an XML project file. You can generate an e
 
 </MyDupFinderProjectDTO>
 ```
+
+### Order of the jobs
+
+`run` executes the jobs of a project file in a fixed order, not in the order of the XML elements: **scan jobs, then refresh jobs, then find-duplicates jobs, then check jobs**. Within one type the jobs run in the order of the project file. The jobs that change databases (scan, refresh) run first, the jobs that only read them (find-duplicates, check) after them, so a find-duplicates report of a project always shows the database after the scan and refresh jobs of the same project. A check job runs last, after the refresh jobs: it compares the files with the database as it is after the refresh, so a project that wants to *see* the changes since the last scan in a check report must not refresh the same database in the same run (use two project files). All jobs are validated before the first one starts.
+
+### Database files and report files
+
+- **`DatabaseFile` / `DatabaseFileBase`** may be an absolute path, a relative path or a bare file name such as `scan.db`. A relative path is resolved against the current directory of the process, the missing directories are created, and the database is opened at exactly that full path. Characters like `;`, `=`, `'` or spaces in the path are fine.
+- **A find-duplicates report is never overwritten.** The report file is `<ReportPath><JobName> dupReport.csv` (`ReportPath` with or without a trailing separator gives the same file). If it already exists, the project is rejected before it runs; if it appears while the job runs, the job writes nothing, leaves the existing file as it is and logs an error. Remove or rename the old report to run the job again.
 
 ### Throttling, progress and logging
 

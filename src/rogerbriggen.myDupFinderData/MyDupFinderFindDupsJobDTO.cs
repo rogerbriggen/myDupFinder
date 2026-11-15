@@ -13,6 +13,8 @@ public class MyDupFinderFindDupsJobDTO
         FindDupsTheWholeLot    //reports everything: duplicates, missing files, new files, changed files
     }
 
+    private const string ReportFileSuffix = " dupReport.csv";
+
     public string JobName { get; set; } = string.Empty;
 
     public string DatabaseFileBase { get; set; } = string.Empty;
@@ -72,12 +74,25 @@ public class MyDupFinderFindDupsJobDTO
             throw new ParameterException($"ReportPath is a file! {dto.ReportPath}");
         }
 
-        // Rule: Make sure the Report is not yet existing
-        if (System.IO.File.Exists(dto.ReportPath + dto.JobName + " dupReport.csv"))
+        // Rule: Make sure the Report is not yet existing (CheckSanity runs before FixDto, so the path is built the same way the runners build it)
+        string reportFile = BuildReportFilePath(dto.ReportPath, dto.JobName);
+        if (System.IO.File.Exists(reportFile))
         {
-            throw new ParameterException($"Report already existing! {dto.ReportPath + dto.JobName} dupReport.csv");
+            throw new ParameterException($"Report already existing! {reportFile}");
         }
     }
+
+    /// <summary>
+    /// The one place that builds the report file name: <c>&lt;ReportPath&gt;&lt;JobName&gt; dupReport.csv</c>.
+    /// ReportPath with or without a trailing directory separator gives the same result.
+    /// </summary>
+    public static string BuildReportFilePath(string reportPath, string jobName) =>
+        FileHelper.AddDirectoryDelimiter(reportPath) + jobName + ReportFileSuffix;
+
+    /// <summary>
+    /// The file the find-duplicates job writes its report to (see <see cref="BuildReportFilePath"/>).
+    /// </summary>
+    public string GetReportFilePath() => BuildReportFilePath(ReportPath, JobName);
 
     public static void FixDto(MyDupFinderFindDupsJobDTO dto) =>
         // Rule: Make sure the ReportPath path has a delimiter at the end

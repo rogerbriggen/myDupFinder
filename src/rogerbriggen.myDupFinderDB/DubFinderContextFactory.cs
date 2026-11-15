@@ -1,6 +1,7 @@
 ﻿// Roger Briggen license this file to you under the MIT license.
 //
 
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -22,7 +23,8 @@ public class DubFinderContextFactory : IDesignTimeDbContextFactory<DubFinderCont
     public static DbContextOptions<DubFinderContext> GetDbContextOptions(string dataSourceName)
     {
         var optionsBuilder = new DbContextOptionsBuilder<DubFinderContext>();
-        optionsBuilder.UseSqlite($"Data Source={dataSourceName}");
+        // The builder quotes the path: a path with ';', '=' or quotes does not break the connection string (as plain string concatenation does)
+        optionsBuilder.UseSqlite(new SqliteConnectionStringBuilder { DataSource = dataSourceName }.ToString());
         optionsBuilder.ConfigureWarnings(w => w.Log(RelationalEventId.PendingModelChangesWarning));
         return optionsBuilder.Options;
     }

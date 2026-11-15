@@ -84,83 +84,82 @@ class Program
                     MyDupFinderProjectDTO.CheckSanity(dto);
                     MyDupFinderProjectDTO.FixDto(dto);
 
-                    //Scan Jobs
-                    foreach (MyDupFinderScanJobDTO scanDto in dto.MyDupFinderScanJobDTOs)
+                    //Jobs in execution order: scan, refresh (they change databases), then find dups, check (they only read them)
+                    foreach (ProjectJob job in dto.GetJobsInExecutionOrder())
                     {
-                        using (var scanService = serviceProvider.GetService<ScanService>())
+                        switch (job.Dto)
                         {
-                            if (scanService is null)
-                            {
-                                logger.LogError("No scanService registered!");
-                                return;
-                            }
-                            logger.LogInformation("Running Job {JobName}...", scanDto.JobName);
-                            ThreadStart ts = delegate { scanService.StartScan(scanDto); };
-                            var t = new Thread(ts);
-                            t.Name = "ScanService";
-                            t.Start();
-                            //Wait for t or for a key press
-                            WaitForThreadOrKeyPress(logger, scanDto.JobName, scanService, t);
-                        }
-                    }
+                            case MyDupFinderScanJobDTO scanDto:
+                                using (var scanService = serviceProvider.GetService<ScanService>())
+                                {
+                                    if (scanService is null)
+                                    {
+                                        logger.LogError("No scanService registered!");
+                                        return;
+                                    }
+                                    logger.LogInformation("Running Job {JobName}...", scanDto.JobName);
+                                    ThreadStart ts = delegate { scanService.StartScan(scanDto); };
+                                    var t = new Thread(ts);
+                                    t.Name = "ScanService";
+                                    t.Start();
+                                    //Wait for t or for a key press
+                                    WaitForThreadOrKeyPress(logger, scanDto.JobName, scanService, t);
+                                }
+                                break;
 
-                    //Find Dups Jobs
-                    foreach (MyDupFinderFindDupsJobDTO findDupsDto in dto.MyDupFinderFindDupsJobDTOs)
-                    {
-                        using (var findDupsService = serviceProvider.GetService<FindDupsService>())
-                        {
-                            if (findDupsService is null)
-                            {
-                                logger.LogError("No scanService registered!");
-                                return;
-                            }
-                            logger.LogInformation("Running Job {JobName}...", findDupsDto.JobName);
-                            ThreadStart ts = delegate { findDupsService.Start(findDupsDto); };
-                            var t = new Thread(ts);
-                            t.Name = "ScanService";
-                            t.Start();
-                            //Wait for t or for a key press
-                            WaitForThreadOrKeyPress(logger, findDupsDto.JobName, findDupsService, t);
-                        }
-                    }
+                            case MyDupFinderRefreshJobDTO refreshDto:
+                                using (var refreshService = serviceProvider.GetService<RefreshService>())
+                                {
+                                    if (refreshService is null)
+                                    {
+                                        logger.LogError("No refreshService registered!");
+                                        return;
+                                    }
+                                    logger.LogInformation("Running Job {JobName}...", refreshDto.JobName);
+                                    ThreadStart ts = delegate { refreshService.StartRefresh(refreshDto); };
+                                    var t = new Thread(ts);
+                                    t.Name = "RefreshService";
+                                    t.Start();
+                                    //Wait for t or for a key press
+                                    WaitForThreadOrKeyPress(logger, refreshDto.JobName, refreshService, t);
+                                }
+                                break;
 
-                    //Refresh Jobs
-                    foreach (MyDupFinderRefreshJobDTO refreshDto in dto.MyDupFinderRefreshJobDTOs)
-                    {
-                        using (var refreshService = serviceProvider.GetService<RefreshService>())
-                        {
-                            if (refreshService is null)
-                            {
-                                logger.LogError("No refreshService registered!");
-                                return;
-                            }
-                            logger.LogInformation("Running Job {JobName}...", refreshDto.JobName);
-                            ThreadStart ts = delegate { refreshService.StartRefresh(refreshDto); };
-                            var t = new Thread(ts);
-                            t.Name = "RefreshService";
-                            t.Start();
-                            //Wait for t or for a key press
-                            WaitForThreadOrKeyPress(logger, refreshDto.JobName, refreshService, t);
-                        }
-                    }
+                            case MyDupFinderFindDupsJobDTO findDupsDto:
+                                using (var findDupsService = serviceProvider.GetService<FindDupsService>())
+                                {
+                                    if (findDupsService is null)
+                                    {
+                                        logger.LogError("No scanService registered!");
+                                        return;
+                                    }
+                                    logger.LogInformation("Running Job {JobName}...", findDupsDto.JobName);
+                                    ThreadStart ts = delegate { findDupsService.Start(findDupsDto); };
+                                    var t = new Thread(ts);
+                                    t.Name = "ScanService";
+                                    t.Start();
+                                    //Wait for t or for a key press
+                                    WaitForThreadOrKeyPress(logger, findDupsDto.JobName, findDupsService, t);
+                                }
+                                break;
 
-                    //Check Jobs
-                    foreach (MyDupFinderCheckJobDTO checkDto in dto.MyDupFinderCheckJobDTOs)
-                    {
-                        using (var checkService = serviceProvider.GetService<CheckService>())
-                        {
-                            if (checkService is null)
-                            {
-                                logger.LogError("No checkService registered!");
-                                return;
-                            }
-                            logger.LogInformation("Running Job {JobName}...", checkDto.ScanJobDTO.JobName);
-                            ThreadStart ts = delegate { checkService.StartCheck(checkDto); };
-                            var t = new Thread(ts);
-                            t.Name = "CheckService";
-                            t.Start();
-                            //Wait for t or for a key press
-                            WaitForThreadOrKeyPress(logger, checkDto.ScanJobDTO.JobName, checkService, t);
+                            case MyDupFinderCheckJobDTO checkDto:
+                                using (var checkService = serviceProvider.GetService<CheckService>())
+                                {
+                                    if (checkService is null)
+                                    {
+                                        logger.LogError("No checkService registered!");
+                                        return;
+                                    }
+                                    logger.LogInformation("Running Job {JobName}...", checkDto.ScanJobDTO.JobName);
+                                    ThreadStart ts = delegate { checkService.StartCheck(checkDto); };
+                                    var t = new Thread(ts);
+                                    t.Name = "CheckService";
+                                    t.Start();
+                                    //Wait for t or for a key press
+                                    WaitForThreadOrKeyPress(logger, checkDto.ScanJobDTO.JobName, checkService, t);
+                                }
+                                break;
                         }
                     }
 
