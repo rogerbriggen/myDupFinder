@@ -108,3 +108,16 @@ Two more benchmarks in the same class (same gate):
 - `Tracking_MemoryOfTheRows_ReportsComparison` prints the managed memory of the rows of one query (`MYDUPFINDER_BENCHMARK_FILES` rows) with and without change tracking.
 
 Numbers are in the Result section of step 5 in [speed-up-plan.md](speed-up-plan.md).
+
+## Hasher benchmark
+
+`FileHasherBenchmark` (step 6 of the plan) compares the old hash expression (`File.OpenRead` + `ComputeHash`) with the shared `FileHasher` at the buffer sizes 64 KB, 256 KB, 1 MB and 4 MB, and with plain `FileStream` reads (1 MB and 4 MB blocks, with the stream's own buffer of 4096 bytes and without it), on one large file and on many small files. Same `MYDUPFINDER_BENCHMARK=1` gate. Run it with `--filter "FullyQualifiedName~FileHasherBenchmark"`, or one of the two with `--filter "FullyQualifiedName~Hasher_LargeFile"` / `"FullyQualifiedName~Hasher_ManySmallFiles"`.
+
+- `Hasher_LargeFile_ReportsBufferSizes`: generates one file of `MYDUPFINDER_BENCHMARK_LARGE_MB` megabytes (default 1024; random content, deleted afterwards) in the temporary folder, so the disk of the temporary folder is the one measured.
+- `Hasher_ManySmallFiles_ReportsBufferSizes`: generates `MYDUPFINDER_BENCHMARK_FILES` files (default 20000; 90 % between 64 B and 4 KB, 10 % up to 64 KB, 20 % duplicates) and hashes all of them one after the other.
+- `MYDUPFINDER_BENCHMARK_RUNS` is the number of runs per variant (default 3). The order of the variants is rotated every run so that no variant always follows the same one. Every result is compared with the hash of the old expression, so a wrong hash fails the benchmark.
+- The output is a table with the best and the median time per variant and MB/s (large file) or files/s (small files).
+- **Cache.** A test cannot empty the cache of the operating system, so these are **warm cache** numbers: the large file was just written and stays in memory, and hashing (SHA-512, about 570 MB/s here) is the limit, not the disk. The effect of the block size on a cold hard disk or a network share is not measured by this benchmark; run it against a path on that medium (the temporary folder can be moved with the `TEMP` environment variable) after a restart or with another large file read in between.
+- The `FileStream` variants reuse one block per size, so they do not measure allocating a block per file.
+
+Numbers and the chosen default are in the Result section of step 6 in [speed-up-plan.md](speed-up-plan.md).
