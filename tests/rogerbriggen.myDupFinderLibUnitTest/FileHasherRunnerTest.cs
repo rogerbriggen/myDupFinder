@@ -18,9 +18,9 @@ using Xunit;
 namespace RogerBriggen.MyDupFinderLibUnitTest;
 
 /// <summary>
-/// The runners with the shared file hasher: a cancel inside a big file, a file that changes while it is read (scan, refresh, check), and the
-/// files that must not be opened at all. The hasher reads in blocks of 1 KB here so that every file has several blocks, and its test hook changes
-/// the file between two blocks at an exact place (with FileShare.ReadWrite: with the default FileShare.Read Windows would refuse the writer).
+/// The runners with the shared file hasher: a cancel inside a big file, the size and time that are stored or reported with a hash (the values read before
+/// hashing), and the files that must not be opened at all. The hasher reads in blocks of 1 KB here so that every file has several blocks, and its test hook
+/// changes the file after the runner read its metadata and before the hasher opens it.
 /// </summary>
 public class FileHasherRunnerTest : IDisposable
 {
@@ -171,14 +171,15 @@ public class FileHasherRunnerTest : IDisposable
         return files;
     }
 
-    private static FileHasher MutatingHasher(string target, FileMutation mutation, bool onlyFirstAttempt, int block = 2) =>
-        new FileHasher(Block, FileShare.ReadWrite)
+    /// <summary>A hasher that appends bytes to the target right before it opens it, i.e. after the runner has read the metadata of the file.</summary>
+    private static FileHasher AppendingHasher(string target) =>
+        new FileHasher(Block)
         {
-            AfterBufferRead = (path, attempt, blockNumber) =>
+            BeforeOpen = path =>
             {
-                if (blockNumber == block && string.Equals(path, target, StringComparison.Ordinal) && (!onlyFirstAttempt || attempt == 1))
+                if (string.Equals(path, target, StringComparison.Ordinal))
                 {
-                    FileMutator.Apply(target, mutation, attempt);
+                    FileMutator.Append(target, 1);
                 }
             },
         };
@@ -186,7 +187,7 @@ public class FileHasherRunnerTest : IDisposable
     private static FileHasher CancellingHasher(string target, CancellationTokenSource cts) =>
         new FileHasher(Block)
         {
-            AfterBufferRead = (path, attempt, blockNumber) =>
+            AfterBufferRead = (path, blockNumber) =>
             {
                 if (blockNumber == 2 && string.Equals(path, target, StringComparison.Ordinal))
                 {
@@ -199,13 +200,10 @@ public class FileHasherRunnerTest : IDisposable
     {
         public int Opens;
 
-        public FileHasher Hasher() => new FileHasher(Block) { BeforeAttempt = (path, attempt) => Interlocked.Increment(ref Opens) };
+        public FileHasher Hasher() => new FileHasher(Block) { BeforeOpen = path => Interlocked.Increment(ref Opens) };
     }
 
     private static string Reference(string path) => ReferenceFileHash.Compute(path);
-
-    private static void AssertWarningAbout(ListLoggerProvider log, string file) =>
-        Assert.Contains(log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains(file, StringComparison.Ordinal) && e.Message.Contains("changed while it was read", StringComparison.Ordinal));
 
     // ================= scan =================
 
@@ -223,7 +221,6 @@ public class FileHasherRunnerTest : IDisposable
         // The three files before it were flushed by the cancel (the default batch of 500 never filled), nothing for the cancelled one
         Assert.Equal(files.Take(3).OrderBy(f => f, StringComparer.Ordinal), ReadItems().Select(r => r.FilenameAndPath).OrderBy(f => f, StringComparer.Ordinal));
         Assert.Empty(ReadErrorItems());
-        Assert.Equal(0, runner.UnstableCount);
         Assert.Equal(3, runner.Throughput.Files);
         Assert.DoesNotContain(log.Entries, e => e.Level >= LogLevel.Warning);
         Assert.Contains(log.Entries, e => e.Message.StartsWith("Scanning was cancelled by user", StringComparison.Ordinal));
@@ -237,85 +234,22 @@ public class FileHasherRunnerTest : IDisposable
     }
 
     [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Scan_FileChangesDuringBothAttempts_StoresNoItem_ButAnErrorItem_AndContinues(FileMutation mutation)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Scan_StoresTheSizeAndTimeThatWereReadBeforeHashing_NotAnythingFromTheHasher(bool trust)
     {
         List<string> files = MakeTree();
         string target = files[2];
-        var log = new ListLoggerProvider();
+        long sizeBefore = new FileInfo(target).Length;
 
-        var runner = RunScan(MutatingHasher(target, mutation, onlyFirstAttempt: false), log: log);
-
-        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
-        Assert.Equal(1, runner.UnstableCount);
-        var rows = ReadItems();
-        Assert.Equal(FileCount - 1, rows.Count);
-        Assert.DoesNotContain(rows, r => r.FilenameAndPath == target);
-        var error = Assert.Single(ReadErrorItems());
-        Assert.Equal(target, error.FilenameAndPath);
-        Assert.Contains("changed while it was read", error.MyException, StringComparison.Ordinal);
-        AssertWarningAbout(log, target);
-        Assert.DoesNotContain(log.Entries, e => e.Level == LogLevel.Error);
-        Assert.Contains(log.Entries, e => e.Message.StartsWith("Scanning finished", StringComparison.Ordinal) && e.Message.Contains("UnstableFiles=1", StringComparison.Ordinal));
-        foreach (string file in files.Where(f => f != target))
-        {
-            Assert.Equal(Reference(file), rows.Single(r => r.FilenameAndPath == file).FileSha512Hash);
-        }
-    }
-
-    [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Scan_FileChangesOnlyDuringTheFirstAttempt_StoresTheFinalHashWithTheFinalSizeAndTime(FileMutation mutation)
-    {
-        List<string> files = MakeTree();
-        string target = files[2];
-
-        var runner = RunScan(MutatingHasher(target, mutation, onlyFirstAttempt: true));
+        var runner = RunScan(AppendingHasher(target), trust: trust);
 
         Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
-        Assert.Equal(0, runner.UnstableCount);
-        Assert.Empty(ReadErrorItems());
+        Assert.NotEqual(sizeBefore, new FileInfo(target).Length);
         var row = ReadItems().Single(r => r.FilenameAndPath == target);
         Assert.Equal(Reference(target), row.FileSha512Hash);
-        Assert.Equal(new FileInfo(target).Length, row.FileSize);
-        Assert.Equal(File.GetLastWriteTimeUtc(target).Ticks, row.FileLastModificationUTC.Ticks);
-        // The metadata that was read before the hash had the old time: the stored time is the one of the file that was hashed
-        Assert.NotEqual(OldTime.Ticks, row.FileLastModificationUTC.Ticks);
-    }
-
-    [Fact]
-    public void Scan_TrustDirectoryMetadata_KeepsTheListedSizeAndTime_ButStoresTheHashOfTheFinalContent()
-    {
-        List<string> files = MakeTree();
-        string target = files[2];
-        long listedSize = new FileInfo(target).Length;
-
-        var runner = RunScan(MutatingHasher(target, FileMutation.Append, onlyFirstAttempt: true), trust: true);
-
-        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
-        var row = ReadItems().Single(r => r.FilenameAndPath == target);
-        Assert.Equal(Reference(target), row.FileSha512Hash);
-        // Documented difference: with TrustDirectoryMetadata the listing values are stored (the next refresh compares the listing with the database)
-        Assert.Equal(listedSize, row.FileSize);
+        Assert.Equal(sizeBefore, row.FileSize);
         Assert.Equal(OldTime.Ticks, row.FileLastModificationUTC.Ticks);
-        Assert.NotEqual(listedSize, new FileInfo(target).Length);
-    }
-
-    [Fact]
-    public void Scan_TrustDirectoryMetadata_StillDetectsAnUnstableFile()
-    {
-        List<string> files = MakeTree();
-        string target = files[2];
-
-        var runner = RunScan(MutatingHasher(target, FileMutation.Append, onlyFirstAttempt: false), trust: true);
-
-        Assert.Equal(1, runner.UnstableCount);
-        Assert.DoesNotContain(ReadItems(), r => r.FilenameAndPath == target);
-        Assert.Single(ReadErrorItems());
     }
 
     [Fact]
@@ -332,7 +266,7 @@ public class FileHasherRunnerTest : IDisposable
     }
 
     [Fact]
-    public void Scan_AStableFile_IsOpenedExactlyOnce()
+    public void Scan_EachFile_IsOpenedExactlyOnce()
     {
         MakeTree();
         var counter = new OpenCounter();
@@ -364,7 +298,6 @@ public class FileHasherRunnerTest : IDisposable
         Assert.Equal(IService.EServiceState.cancelled, runner.RunnerState);
         Assert.Equal(1, runner.UpdatedCount);
         Assert.Equal(0, runner.ErrorCount);
-        Assert.Equal(0, runner.UnstableCount);
         Assert.Equal(0, runner.RemovedCount);
         var after = ReadItems().ToDictionary(r => r.FilenameAndPath, StringComparer.Ordinal);
         Assert.Equal(FileCount, after.Count);
@@ -380,110 +313,46 @@ public class FileHasherRunnerTest : IDisposable
     }
 
     [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Refresh_ExistingRowWhoseFileChangesDuringBothAttempts_StaysExactlyAsItWas(FileMutation mutation)
-    {
-        List<string> files = MakeScannedTree();
-        string target = files[3];
-        File.WriteAllBytes(target, RandomBytes(9 * Block, 31));
-        var before = ReadItems().ToDictionary(r => r.FilenameAndPath, StringComparer.Ordinal);
-        var log = new ListLoggerProvider();
-
-        var runner = RunRefresh(MutatingHasher(target, mutation, onlyFirstAttempt: false), log: log);
-
-        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
-        Assert.Equal(1, runner.ErrorCount);
-        Assert.Equal(1, runner.UnstableCount);
-        Assert.Equal(0, runner.UpdatedCount);
-        Assert.Equal(0, runner.AddedCount);
-        Assert.Equal(0, runner.RemovedCount);
-        Assert.Equal(FileCount - 1, runner.UnchangedCount);
-        var after = ReadItems().ToDictionary(r => r.FilenameAndPath, StringComparer.Ordinal);
-        Assert.Equal(FileCount, after.Count);
-        Assert.Equal(Snapshot(before[target]), Snapshot(after[target]));
-        AssertWarningAbout(log, target);
-        Assert.Contains(log.Entries, e => e.Message.StartsWith("Refresh finished.", StringComparison.Ordinal) && e.Message.Contains("Unstable=1", StringComparison.Ordinal));
-    }
-
-    [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Refresh_NewFileThatChangesDuringBothAttempts_IsNotAdded(FileMutation mutation)
-    {
-        MakeScannedTree();
-        string added = Path.Combine(_treeDir, "added.bin");
-        File.WriteAllBytes(added, RandomBytes(9 * Block, 41));
-        var log = new ListLoggerProvider();
-
-        var runner = RunRefresh(MutatingHasher(added, mutation, onlyFirstAttempt: false), log: log);
-
-        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
-        Assert.Equal(0, runner.AddedCount);
-        Assert.Equal(1, runner.ErrorCount);
-        Assert.Equal(1, runner.UnstableCount);
-        Assert.Equal(FileCount, runner.UnchangedCount);
-        Assert.DoesNotContain(ReadItems(), r => r.FilenameAndPath == added);
-        AssertWarningAbout(log, added);
-    }
-
-    [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Refresh_FileChangesOnlyDuringTheFirstAttempt_UpdatesWithTheFinalHashSizeAndTime(FileMutation mutation)
-    {
-        List<string> files = MakeScannedTree();
-        string target = files[3];
-        File.WriteAllBytes(target, RandomBytes(9 * Block, 32));
-
-        var runner = RunRefresh(MutatingHasher(target, mutation, onlyFirstAttempt: true));
-
-        Assert.Equal(1, runner.UpdatedCount);
-        Assert.Equal(0, runner.ErrorCount);
-        Assert.Equal(0, runner.UnstableCount);
-        var row = ReadItems().Single(r => r.FilenameAndPath == target);
-        Assert.Equal(Reference(target), row.FileSha512Hash);
-        Assert.Equal(new FileInfo(target).Length, row.FileSize);
-        Assert.Equal(File.GetLastWriteTimeUtc(target).Ticks, row.FileLastModificationUTC.Ticks);
-    }
-
-    [Fact]
-    public void Refresh_NewFileThatChangesDuringTheFirstAttempt_IsAddedWithTheFinalValues_AndItsCreationTimeAsRead()
-    {
-        MakeScannedTree();
-        string added = Path.Combine(_treeDir, "added.bin");
-        File.WriteAllBytes(added, RandomBytes(9 * Block, 42));
-        File.SetCreationTimeUtc(added, new DateTime(2003, 4, 5, 6, 7, 8, DateTimeKind.Utc).AddTicks(99));
-
-        var runner = RunRefresh(MutatingHasher(added, FileMutation.Append, onlyFirstAttempt: true));
-
-        Assert.Equal(1, runner.AddedCount);
-        var row = ReadItems().Single(r => r.FilenameAndPath == added);
-        Assert.Equal(Reference(added), row.FileSha512Hash);
-        Assert.Equal(new FileInfo(added).Length, row.FileSize);
-        Assert.Equal(File.GetLastWriteTimeUtc(added).Ticks, row.FileLastModificationUTC.Ticks);
-        Assert.Equal(new DateTime(2003, 4, 5, 6, 7, 8, DateTimeKind.Utc).AddTicks(99).Ticks, row.FileCreationUTC.Ticks);
-    }
-
-    [Fact]
-    public void Refresh_TrustDirectoryMetadata_StoresTheListedValuesWithTheHashOfTheFinalContent()
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Refresh_UpdatesTheRowWithTheSizeAndTimeThatWereReadBeforeHashing_NotAnythingFromTheHasher(bool trust)
     {
         List<string> files = MakeScannedTree();
         string target = files[3];
         File.WriteAllBytes(target, RandomBytes(9 * Block, 33));
         File.SetLastWriteTimeUtc(target, OldTime.AddDays(1));
-        long listedSize = new FileInfo(target).Length;
+        long sizeBefore = new FileInfo(target).Length;
 
-        var runner = RunRefresh(MutatingHasher(target, FileMutation.Append, onlyFirstAttempt: true), trust: true);
+        var runner = RunRefresh(AppendingHasher(target), trust: trust);
 
         Assert.Equal(1, runner.UpdatedCount);
+        Assert.NotEqual(sizeBefore, new FileInfo(target).Length);
         var row = ReadItems().Single(r => r.FilenameAndPath == target);
         Assert.Equal(Reference(target), row.FileSha512Hash);
-        Assert.Equal(listedSize, row.FileSize);
+        Assert.Equal(sizeBefore, row.FileSize);
         Assert.Equal(OldTime.AddDays(1).Ticks, row.FileLastModificationUTC.Ticks);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Refresh_AddsANewFileWithTheSizeAndTimeThatWereReadBeforeHashing_AndItsCreationTime(bool trust)
+    {
+        MakeScannedTree();
+        string added = Path.Combine(_treeDir, "added.bin");
+        File.WriteAllBytes(added, RandomBytes(9 * Block, 42));
+        File.SetCreationTimeUtc(added, new DateTime(2003, 4, 5, 6, 7, 8, DateTimeKind.Utc).AddTicks(99));
+        File.SetLastWriteTimeUtc(added, OldTime.AddDays(2));
+        long sizeBefore = new FileInfo(added).Length;
+
+        var runner = RunRefresh(AppendingHasher(added), trust: trust);
+
+        Assert.Equal(1, runner.AddedCount);
+        var row = ReadItems().Single(r => r.FilenameAndPath == added);
+        Assert.Equal(Reference(added), row.FileSha512Hash);
+        Assert.Equal(sizeBefore, row.FileSize);
+        Assert.Equal(OldTime.AddDays(2).Ticks, row.FileLastModificationUTC.Ticks);
+        Assert.Equal(new DateTime(2003, 4, 5, 6, 7, 8, DateTimeKind.Utc).AddTicks(99).Ticks, row.FileCreationUTC.Ticks);
     }
 
     [Fact]
@@ -527,100 +396,49 @@ public class FileHasherRunnerTest : IDisposable
         Assert.Equal(IService.EServiceState.cancelled, runner.RunnerState);
         Assert.Equal(3, runner.OkCount);
         Assert.Equal(0, runner.ErrorCount);
-        Assert.Equal(0, runner.UnstableCount);
         Assert.Empty(rows);
         Assert.DoesNotContain(log.Entries, e => e.Level >= LogLevel.Warning);
         Assert.Contains(log.Entries, e => e.Message.StartsWith("Check was cancelled by user", StringComparison.Ordinal));
     }
 
     [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Check_FileChangesDuringBothAttempts_WritesNoRow_DoesNotReportItAsMissing_AndCountsIt(FileMutation mutation)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Check_ComparesAndReportsTheSizeAndTimeThatWereReadBeforeHashing_NotAnythingFromTheHasher(bool trust)
     {
         List<string> files = MakeScannedTree();
         string target = files[3];
-        var log = new ListLoggerProvider();
+        long sizeBefore = new FileInfo(target).Length;
 
-        var (runner, rows) = RunCheck(MutatingHasher(target, mutation, onlyFirstAttempt: false), log: log);
+        var (runner, rows) = RunCheck(AppendingHasher(target), trust: trust);
 
-        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
-        Assert.Empty(rows);
-        Assert.Equal(0, runner.MissingOnDiskCount);
-        Assert.Equal(0, runner.NewOnDiskCount);
-        Assert.Equal(1, runner.ErrorCount);
-        Assert.Equal(1, runner.UnstableCount);
-        Assert.Equal(FileCount - 1, runner.OkCount);
-        AssertWarningAbout(log, target);
-        Assert.Contains(log.Entries, e => e.Message.StartsWith("Check finished.", StringComparison.Ordinal) && e.Message.Contains("Unstable=1", StringComparison.Ordinal));
+        Assert.Equal(0, runner.ErrorCount);
+        Assert.NotEqual(sizeBefore, new FileInfo(target).Length);
+        var row = Assert.Single(rows);
+        // Size and time before hashing equal the database, only the hash differs
+        Assert.Equal(CheckCategory.BitRotSuspect, row.Category);
+        Assert.Equal(Reference(target), row.HashDisk);
+        Assert.Equal(sizeBefore, row.FileSizeDisk);
+        Assert.Equal(OldTime.Ticks, row.MTimeDisk!.Value.Ticks);
     }
 
     [Fact]
-    public void Check_NewFileThatChangesDuringBothAttempts_WritesNoRow()
+    public void Check_NewFile_ReportsTheSizeAndTimeThatWereReadBeforeHashing_WithTheHash()
     {
         MakeScannedTree();
         string added = Path.Combine(_treeDir, "added.bin");
         File.WriteAllBytes(added, RandomBytes(9 * Block, 51));
-        var log = new ListLoggerProvider();
+        File.SetLastWriteTimeUtc(added, OldTime.AddDays(3));
+        long sizeBefore = new FileInfo(added).Length;
 
-        var (runner, rows) = RunCheck(MutatingHasher(added, FileMutation.Append, onlyFirstAttempt: false), log: log);
+        var (runner, rows) = RunCheck(AppendingHasher(added));
 
-        Assert.Empty(rows);
-        Assert.Equal(0, runner.NewOnDiskCount);
-        Assert.Equal(1, runner.ErrorCount);
-        Assert.Equal(1, runner.UnstableCount);
-        Assert.Equal(FileCount, runner.OkCount);
-        AssertWarningAbout(log, added);
-    }
-
-    [Fact]
-    public void Check_FileThatGrowsDuringTheFirstAttempt_ReportsTheFinalHashSizeAndTime()
-    {
-        List<string> files = MakeScannedTree();
-        string target = files[3];
-
-        var (runner, rows) = RunCheck(MutatingHasher(target, FileMutation.Append, onlyFirstAttempt: true));
-
-        Assert.Equal(0, runner.ErrorCount);
+        Assert.Equal(1, runner.NewOnDiskCount);
         var row = Assert.Single(rows);
-        Assert.Equal(CheckCategory.Modified, row.Category);
-        Assert.Equal(Reference(target), row.HashDisk);
-        Assert.Equal(new FileInfo(target).Length, row.FileSizeDisk);
-        Assert.Equal(File.GetLastWriteTimeUtc(target).Ticks, row.MTimeDisk!.Value.Ticks);
-    }
-
-    [Fact]
-    public void Check_FileWhoseTimeChangesDuringTheFirstAttempt_ReportsTheNewTime_WithTheSameHash()
-    {
-        List<string> files = MakeScannedTree();
-        string target = files[3];
-
-        var (runner, rows) = RunCheck(MutatingHasher(target, FileMutation.Touch, onlyFirstAttempt: true));
-
-        Assert.Equal(0, runner.ErrorCount);
-        var row = Assert.Single(rows);
-        Assert.Equal(CheckCategory.ModifiedNoHashChange, row.Category);
-        Assert.Equal(File.GetLastWriteTimeUtc(target).Ticks, row.MTimeDisk!.Value.Ticks);
-        Assert.NotEqual(OldTime.Ticks, row.MTimeDisk!.Value.Ticks);
-    }
-
-    [Fact]
-    public void Check_TrustDirectoryMetadata_ReportsTheListedValues_WithTheHashOfTheFinalContent()
-    {
-        List<string> files = MakeScannedTree();
-        string target = files[3];
-        long listedSize = new FileInfo(target).Length;
-
-        var (runner, rows) = RunCheck(MutatingHasher(target, FileMutation.Append, onlyFirstAttempt: true), trust: true);
-
-        Assert.Equal(0, runner.ErrorCount);
-        var row = Assert.Single(rows);
-        // The listing (and the database) say nothing changed, only the hash differs
-        Assert.Equal(CheckCategory.BitRotSuspect, row.Category);
-        Assert.Equal(Reference(target), row.HashDisk);
-        Assert.Equal(listedSize, row.FileSizeDisk);
-        Assert.Equal(OldTime.Ticks, row.MTimeDisk!.Value.Ticks);
+        Assert.Equal(CheckCategory.NewOnDisk, row.Category);
+        Assert.Equal(Reference(added), row.HashDisk);
+        Assert.Equal(sizeBefore, row.FileSizeDisk);
+        Assert.Equal(OldTime.AddDays(3).Ticks, row.MTimeDisk!.Value.Ticks);
     }
 
     [Fact]

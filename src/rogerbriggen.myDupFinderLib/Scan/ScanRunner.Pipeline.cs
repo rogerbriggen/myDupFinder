@@ -119,7 +119,7 @@ internal partial class ScanRunner
             }
             if (CancelToken.IsCancellationRequested && _interrupted)
             {
-                _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount} UnstableFiles={UnstableCount}");
+                _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
                 Throughput.LogSummary("Scanning cancelled");
                 LogUnreadableSummary(complete: false);
                 RunnerState = IService.EServiceState.cancelled;

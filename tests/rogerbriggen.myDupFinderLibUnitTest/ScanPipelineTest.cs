@@ -172,7 +172,7 @@ public class ScanPipelineTest : IDisposable
         string failing = real[7].FullPath;
         FileHasher NewHasher() => new FileHasher
         {
-            BeforeAttempt = (path, attempt) =>
+            BeforeOpen = path =>
             {
                 if (string.Equals(path, failing, StringComparison.Ordinal))
                 {
@@ -204,10 +204,10 @@ public class ScanPipelineTest : IDisposable
         int callerThread = Environment.CurrentManagedThreadId;
         using (var serviceProvider = PipelineTestSupport.BuildServices())
         {
-            var runner = NewRunner(Job(tree.Root, "t1", 1), serviceProvider, hasher: new FileHasher { BeforeAttempt = (p, a) => sequentialThreads.Add(Environment.CurrentManagedThreadId) });
+            var runner = NewRunner(Job(tree.Root, "t1", 1), serviceProvider, hasher: new FileHasher { BeforeOpen = p => sequentialThreads.Add(Environment.CurrentManagedThreadId) });
             runner.Start(CancellationToken.None);
         }
-        RunToEnd(Job(tree.Root, "t4", 4), hasher: new FileHasher { BeforeAttempt = (p, a) => pipelineThreads.Add(Environment.CurrentManagedThreadId) });
+        RunToEnd(Job(tree.Root, "t4", 4), hasher: new FileHasher { BeforeOpen = p => pipelineThreads.Add(Environment.CurrentManagedThreadId) });
 
         Assert.Equal(30, sequentialThreads.Count);
         Assert.All(sequentialThreads, id => Assert.Equal(callerThread, id));
@@ -262,9 +262,9 @@ public class ScanPipelineTest : IDisposable
         using var releaseWriter = new ManualResetEventSlim(false);
         var hasher = new FileHasher
         {
-            BeforeAttempt = (path, attempt) =>
+            BeforeOpen = path =>
             {
-                if (attempt == 1 && parkedPaths.Contains(path))
+                if (parkedPaths.Contains(path))
                 {
                     parked.Signal();
                     PipelineTestSupport.Wait(releaseWorkers, "release of the parked workers");
@@ -330,9 +330,9 @@ public class ScanPipelineTest : IDisposable
         // The hasher reads blocks of 1 KB; every worker parks after the second block of a file (inside the file)
         var hasher = new FileHasher(Block)
         {
-            AfterBufferRead = (path, attempt, block) =>
+            AfterBufferRead = (path, block) =>
             {
-                if (attempt == 1 && block == 2 && parkedPaths.Contains(path))
+                if (block == 2 && parkedPaths.Contains(path))
                 {
                     parked.Signal();
                     PipelineTestSupport.Wait(releaseWorkers, "release of the parked workers");
@@ -402,7 +402,7 @@ public class ScanPipelineTest : IDisposable
         int hashStarts = 0;
         var inserts = new ScanJobDBInserts(null, 10, TimeSpan.FromHours(1));
 
-        var runner = RunToEnd(Job(tree.Root, "fatal", 4), log, hasher: new FileHasher { BeforeAttempt = (p, a) => Interlocked.Increment(ref hashStarts) }, inserts: inserts);
+        var runner = RunToEnd(Job(tree.Root, "fatal", 4), log, hasher: new FileHasher { BeforeOpen = p => Interlocked.Increment(ref hashStarts) }, inserts: inserts);
 
         var (rows, errors) = PipelineTestSupport.ReadSnapshot(DbPath("fatal"));
         Assert.True(rows.Count < tree.Files.Count);
@@ -503,7 +503,7 @@ public class ScanPipelineTest : IDisposable
         int hashStarts = 0;
         var hasher = new FileHasher
         {
-            BeforeAttempt = (path, attempt) =>
+            BeforeOpen = path =>
             {
                 if (Interlocked.Increment(ref hashStarts) <= workers)
                 {

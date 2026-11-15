@@ -7,7 +7,6 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
-using Microsoft.Win32.SafeHandles;
 using RogerBriggen.MyDupFinderLib;
 using Xunit;
 using Xunit.Abstractions;
@@ -28,45 +27,16 @@ internal static class ReferenceFileHash
 }
 
 /// <summary>
-/// Changes a file the way a writer would while a hasher reads it. Used by the tests of the stability check.
+/// Changes a file the way a writer would between the metadata read of a runner and the hashing. Used by the tests of the stored size and time.
 /// </summary>
-public enum FileMutation
-{
-    /// <summary>Appends bytes (the file grows).</summary>
-    Append,
-
-    /// <summary>Cuts the file to half of its length.</summary>
-    Truncate,
-
-    /// <summary>Sets another last write time, content and size stay.</summary>
-    Touch,
-}
-
 internal static class FileMutator
 {
-    /// <param name="round">Makes the new values different every time the same file is changed.</param>
-    public static void Apply(string path, FileMutation mutation, int round)
+    /// <summary>Appends bytes (the file grows and gets a new last write time).</summary>
+    /// <param name="round">Makes the new bytes different every time the same file is changed.</param>
+    public static void Append(string path, int round)
     {
-        switch (mutation)
-        {
-            case FileMutation.Append:
-                using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
-                {
-                    stream.Write(Enumerable.Range(0, 100 + round).Select(i => (byte)(i + round)).ToArray());
-                }
-                break;
-            case FileMutation.Truncate:
-                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
-                {
-                    stream.SetLength(stream.Length / 2);
-                }
-                break;
-            case FileMutation.Touch:
-                File.SetLastWriteTimeUtc(path, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(round).AddTicks(1234567 + round));
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(mutation));
-        }
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        stream.Write(Enumerable.Range(0, 100 + round).Select(i => (byte)(i + round)).ToArray());
     }
 }
 
@@ -106,8 +76,8 @@ public class FileHasherTest : IDisposable
         return bytes;
     }
 
-    private static FileHasher Hasher(int bufferSize = SmallBuffer, FileShare share = FileShare.Read, Action<string, int, int>? after = null, Action<string, int>? before = null) =>
-        new FileHasher(bufferSize, share) { AfterBufferRead = after, BeforeAttempt = before };
+    private static FileHasher Hasher(int bufferSize = SmallBuffer, Action<string, int>? after = null, Action<string>? before = null) =>
+        new FileHasher(bufferSize) { AfterBufferRead = after, BeforeOpen = before };
 
     // ---- identical output ----
 
@@ -126,14 +96,11 @@ public class FileHasherTest : IDisposable
 
         FileHashResult result = Hasher().Compute(path);
 
-        Assert.True(result.IsStable);
         Assert.Equal(ReferenceFileHash.Compute(path), result.Hash);
-        Assert.Equal(128, result.Hash!.Length);
+        Assert.Equal(128, result.Hash.Length);
         Assert.Equal(result.Hash.ToUpperInvariant(), result.Hash);
         Assert.DoesNotContain('-', result.Hash);
         Assert.Equal(size, result.BytesRead);
-        Assert.Equal(size, result.Length);
-        Assert.Equal(1, result.Attempts);
     }
 
     [Fact]
@@ -298,7 +265,7 @@ public class FileHasherTest : IDisposable
         }
         string path = NewFile(RandomBytes(5 * SmallBuffer, 9));
         Exception? writerError = null;
-        var hasher = Hasher(after: (p, attempt, block) =>
+        var hasher = Hasher(after: (p, block) =>
         {
             if (block == 1)
             {
@@ -315,53 +282,9 @@ public class FileHasherTest : IDisposable
 
         FileHashResult result = hasher.Compute(path);
 
-        // This is why the tests that change a file during the read use FileShare.ReadWrite (internal test parameter)
+        // The hasher opens the file with FileShare.Read, like File.OpenRead
         Assert.NotNull(writerError);
-        Assert.True(result.IsStable);
-    }
-
-    // ---- handle based size and time equal the path based ones ----
-
-    [Fact]
-    public void HandleValues_EqualThePathValues_TickForTick()
-    {
-        var times = new[]
-        {
-            new DateTime(2024, 5, 17, 13, 45, 12, DateTimeKind.Utc).AddTicks(1234567),
-            new DateTime(2001, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddTicks(1),
-            new DateTime(1999, 12, 31, 23, 59, 59, DateTimeKind.Utc).AddTicks(9999999),
-            new DateTime(2031, 2, 3, 4, 5, 6, DateTimeKind.Utc).AddTicks(7777777),
-        };
-        foreach (DateTime time in times)
-        {
-            string path = NewFile(RandomBytes(1234, time.Millisecond));
-            File.SetLastWriteTimeUtc(path, time);
-
-            using SafeFileHandle handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.SequentialScan);
-
-            DateTime fromHandle = File.GetLastWriteTimeUtc(handle);
-            DateTime fromPath = File.GetLastWriteTimeUtc(path);
-            Assert.Equal(DateTimeKind.Utc, fromHandle.Kind);
-            Assert.Equal(fromPath.Ticks, fromHandle.Ticks);
-            Assert.Equal(new FileInfo(path).LastWriteTimeUtc.Ticks, fromHandle.Ticks);
-            Assert.Equal(FileMetadata.Read(path).LastWriteTimeUtc.Ticks, fromHandle.Ticks);
-            Assert.Equal(new FileInfo(path).Length, RandomAccess.GetLength(handle));
-            Assert.Equal(FileMetadata.Read(path).Length, RandomAccess.GetLength(handle));
-            _output.WriteLine($"{time:O}: handle {fromHandle.Ticks} path {fromPath.Ticks}");
-        }
-    }
-
-    [Fact]
-    public void HashResult_TakesSizeAndTimeFromTheFileItself()
-    {
-        string path = NewFile(RandomBytes(3 * SmallBuffer, 5));
-        File.SetLastWriteTimeUtc(path, new DateTime(2022, 3, 4, 5, 6, 7, DateTimeKind.Utc).AddTicks(8901234));
-
-        FileHashResult result = Hasher().Compute(path);
-
-        Assert.Equal(new FileInfo(path).Length, result.Length);
-        Assert.Equal(File.GetLastWriteTimeUtc(path).Ticks, result.LastWriteTimeUtc.Ticks);
-        Assert.Equal(DateTimeKind.Utc, result.LastWriteTimeUtc.Kind);
+        Assert.Equal(ReferenceFileHash.Compute(path), result.Hash);
     }
 
     // ---- cancel ----
@@ -372,7 +295,7 @@ public class FileHasherTest : IDisposable
         string path = NewFile(RandomBytes(8 * SmallBuffer, 6));
         using var cts = new CancellationTokenSource();
         int blocks = 0;
-        var hasher = Hasher(after: (p, attempt, block) =>
+        var hasher = Hasher(after: (p, block) =>
         {
             blocks = block;
             if (block == 2)
@@ -393,138 +316,25 @@ public class FileHasherTest : IDisposable
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         int blocks = 0;
-        var hasher = Hasher(after: (p, attempt, block) => blocks++);
+        var hasher = Hasher(after: (p, block) => blocks++);
 
         Assert.ThrowsAny<OperationCanceledException>(() => hasher.Compute(path, cts.Token));
 
         Assert.Equal(0, blocks);
     }
 
-    [Fact]
-    public void Cancel_DuringTheSecondAttempt_StillThrows()
-    {
-        string path = NewFile(RandomBytes(4 * SmallBuffer, 8));
-        using var cts = new CancellationTokenSource();
-        var hasher = Hasher(share: FileShare.ReadWrite, after: (p, attempt, block) =>
-        {
-            if (attempt == 1 && block == 1)
-            {
-                FileMutator.Apply(path, FileMutation.Append, 1);
-            }
-            if (attempt == 2 && block == 2)
-            {
-                cts.Cancel();
-            }
-        });
-
-        Assert.ThrowsAny<OperationCanceledException>(() => hasher.Compute(path, cts.Token));
-    }
-
-    // ---- stability ----
-
-    [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Changed_OnlyDuringTheFirstAttempt_ReturnsTheHashOfTheFinalContentWithFinalSizeAndTime(FileMutation mutation)
-    {
-        string path = NewFile(RandomBytes(8 * SmallBuffer, 11));
-        var hasher = Hasher(share: FileShare.ReadWrite, after: (p, attempt, block) =>
-        {
-            if (attempt == 1 && block == 2)
-            {
-                FileMutator.Apply(path, mutation, 1);
-            }
-        });
-
-        FileHashResult result = hasher.Compute(path);
-
-        Assert.True(result.IsStable);
-        Assert.Equal(2, result.Attempts);
-        Assert.Equal(ReferenceFileHash.Compute(path), result.Hash);
-        Assert.Equal(new FileInfo(path).Length, result.Length);
-        Assert.Equal(result.Length, result.BytesRead);
-        Assert.Equal(File.GetLastWriteTimeUtc(path).Ticks, result.LastWriteTimeUtc.Ticks);
-    }
-
-    [Theory]
-    [InlineData(FileMutation.Append)]
-    [InlineData(FileMutation.Truncate)]
-    [InlineData(FileMutation.Touch)]
-    public void Changed_DuringBothAttempts_IsUnstableAndHasNoHash(FileMutation mutation)
-    {
-        string path = NewFile(RandomBytes(8 * SmallBuffer, 12));
-        int opened = 0;
-        var hasher = Hasher(
-            share: FileShare.ReadWrite,
-            before: (p, attempt) => opened++,
-            after: (p, attempt, block) =>
-            {
-                if (block == 2)
-                {
-                    FileMutator.Apply(path, mutation, attempt);
-                }
-            });
-
-        FileHashResult result = hasher.Compute(path);
-
-        Assert.False(result.IsStable);
-        Assert.Null(result.Hash);
-        Assert.Equal(2, result.Attempts);
-        Assert.Equal(2, opened);
-        Assert.False(string.IsNullOrEmpty(result.InstabilityDescription));
-    }
+    // ---- opens ----
 
     [Fact]
-    public void Truncated_BelowWhatWasAlreadyRead_IsUnstable()
-    {
-        string path = NewFile(RandomBytes(8 * SmallBuffer, 13));
-        var hasher = Hasher(share: FileShare.ReadWrite, after: (p, attempt, block) =>
-        {
-            if (block == 3)
-            {
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
-                stream.SetLength(10);
-            }
-        });
-
-        FileHashResult result = hasher.Compute(path);
-
-        // The first attempt read 3 blocks of a file that is 10 bytes long now; the second attempt reads a stable 10 byte file
-        Assert.True(result.IsStable);
-        Assert.Equal(10, result.Length);
-        Assert.Equal(ReferenceFileHash.Compute(path), result.Hash);
-    }
-
-    [Fact]
-    public void Grown_AndTheSizeIsTheOnlyDifference_IsDetectedEvenWhenTheTimeIsRestored()
-    {
-        string path = NewFile(RandomBytes(4 * SmallBuffer, 14));
-        DateTime original = File.GetLastWriteTimeUtc(path);
-        var hasher = Hasher(share: FileShare.ReadWrite, after: (p, attempt, block) =>
-        {
-            if (block == 1)
-            {
-                FileMutator.Apply(path, FileMutation.Append, attempt);
-                File.SetLastWriteTimeUtc(path, original);
-            }
-        });
-
-        FileHashResult result = hasher.Compute(path);
-
-        Assert.False(result.IsStable);
-    }
-
-    [Fact]
-    public void NotChanged_IsReadOnce()
+    public void Compute_OpensTheFileOnce_AndReadsItToTheEnd()
     {
         string path = NewFile(RandomBytes(4 * SmallBuffer, 15));
         int opened = 0;
 
-        FileHashResult result = Hasher(before: (p, attempt) => opened++).Compute(path);
+        FileHashResult result = Hasher(before: p => opened++).Compute(path);
 
-        Assert.True(result.IsStable);
         Assert.Equal(1, opened);
+        Assert.Equal(4 * SmallBuffer, result.BytesRead);
     }
 
     [Fact]
