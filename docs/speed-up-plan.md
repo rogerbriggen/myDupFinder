@@ -278,6 +278,8 @@ Compared with the old expression the large file is 30 % faster (the 4096-byte re
 | Resume (second run) | `2.1 s, enumerate=0.7 s, hash=0.0 s, database=1.4 s` | `2.1 s, enumerate=0.7 s, hash=0.0 s, database=1.4 s` |
 | Check `IgnoreBasePath` | `0.91 s total` | `0.95 s total` |
 
+**Note, 2026-11-15: the change detection was removed again, at the user's decision.** On Windows a file that is being read cannot be written by others because of the share mode (`FileShare.Read`, the same as `File.OpenRead`), so the check practically never fired there, and it cost four handle queries per file (size and last write time before and after reading), about 12 to 15 % on many small files. What remains from step 6: the one shared `FileHasher` (sequential-scan hint, pooled 1 MB buffer, `IncrementalHash`, `Convert.ToHexString`, identical hash text, same open and sharing semantics as `File.OpenRead`), the buffer size measurement, the cancel between blocks inside a file, files that are skipped are never opened, and the hasher benchmark. Gone: the second attempt, the unstable outcome and its counters (`UnstableCount`, `Unstable=`, `UnstableFiles=`), the scan error item for a changed file, and the hasher size and time. The size and last write time stored with a hash (and compared and reported by check) are again the values read before hashing (`FileMetadata`, or the directory listing with `TrustDirectoryMetadata`). Because the hasher no longer knows the file size, a read request is always one block; the loop reads until a read returns 0, so the hash is unchanged. The description above is kept as history.
+
 ## Step 7 — Scan pipeline
 
 Replace the single-thread loop with three stages connected by bounded channels: one enumerator, N hash workers, one database writer.

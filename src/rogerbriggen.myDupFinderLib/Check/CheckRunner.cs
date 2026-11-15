@@ -19,9 +19,6 @@ namespace RogerBriggen.MyDupFinderLib;
 /// Each disk file is classified as Ok, BitRotSuspect, Modified, ModifiedNoHashChange, or NewOnDisk.
 /// DB rows that have no matching disk file are reported as MissingOnDisk.
 /// The result is written as a self-contained CSV that applyCheck can later replay against the DB.
-/// A file that changes while it is hashed (twice in a row, see <see cref="FileHasher"/>) gets no row, its database row is not reported as missing, and it is counted in
-/// <see cref="ErrorCount"/> and <see cref="UnstableCount"/>. Without TrustDirectoryMetadata the size and last write time compared and reported with a hash are the ones of the
-/// open file that was hashed; with it the values of the directory listing.
 /// </summary>
 internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 {
@@ -53,12 +50,6 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     public int NewOnDiskCount { get; private set; }
     public int OkCount { get; private set; }
     public int ErrorCount { get; private set; }
-
-    /// <summary>
-    /// Files that changed while they were read, twice in a row. They are also counted in <see cref="ErrorCount"/>. No report row is written for them
-    /// (a hash that matches neither state of the file would be misleading), and their database row is not reported as <c>MissingOnDisk</c>.
-    /// </summary>
-    public int UnstableCount { get; private set; }
 
     public string? ReportFilePath { get; private set; }
 
@@ -313,24 +304,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         {
             // No DB row at all => new on disk. Compute hash so applyCheck can insert without re-reading.
             FileHashResult? newHashed = CheckJobDTO.SkipHashCheck ? null : ComputeHashOrNull(currentFile);
-            if (newHashed is { IsStable: false } newUnstable)
-            {
-                // No row at all: there is no database row to claim and a half-true hash must not be written
-                RecordUnstable(currentFile, newUnstable);
-                return 0;
-            }
             string? newHash = newHashed?.Hash;
-            long newBytesHashed = 0;
-            if (newHashed is { IsStable: true } newStable)
-            {
-                newBytesHashed = newStable.BytesRead;
-                if (!CheckJobDTO.ScanJobDTO.TrustDirectoryMetadata)
-                {
-                    // Size and time of the file itself belong to the hash, so applyCheck stores a consistent row (with TrustDirectoryMetadata the listing values stay)
-                    fileSize = newStable.Length;
-                    fileLastModificationUTC = newStable.LastWriteTimeUtc;
-                }
-            }
             var row = new CheckReportRow
             {
                 Category = CheckCategory.NewOnDisk,
@@ -345,7 +319,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             CheckReportCsv.WriteRow(writer, row);
             NewOnDiskCount++;
             _logger.LogTrace("Check: NewOnDisk {file}", currentFile);
-            return newBytesHashed;
+            return newHashed?.BytesRead ?? 0;
         }
 
         seenIds.Add(matched.Id);
@@ -396,21 +370,8 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             ErrorCount++;
             return 0;
         }
-        if (!hashed.Value.IsStable)
-        {
-            // The row of the database was claimed above (seenIds), so it is not reported as MissingOnDisk. No report row.
-            RecordUnstable(currentFile, hashed.Value);
-            return 0;
-        }
-        string diskHash = hashed.Value.Hash!;
+        string diskHash = hashed.Value.Hash;
         long bytesHashed = hashed.Value.BytesRead;
-        if (!CheckJobDTO.ScanJobDTO.TrustDirectoryMetadata)
-        {
-            // Compare and report the size and time of the file itself that belong to the hash (with TrustDirectoryMetadata the listing values stay)
-            fileSize = hashed.Value.Length;
-            fileLastModificationUTC = hashed.Value.LastWriteTimeUtc;
-            sizeOrMtimeChanged = matched.FileSize != fileSize || matched.FileLastModificationUTC != fileLastModificationUTC;
-        }
 
         bool hashDiffers = !string.Equals(diskHash, matched.FileSha512Hash, StringComparison.OrdinalIgnoreCase);
 
@@ -466,14 +427,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         return bytesHashed;
     }
 
-    private void RecordUnstable(string filePath, FileHashResult hashed)
-    {
-        ErrorCount++;
-        UnstableCount++;
-        _logger.LogWarning("Check: {file} changed while it was read (read twice from the start, not stable either time: {description}). No report row was written for it.", filePath, hashed.InstabilityDescription);
-    }
-
-    /// <returns>The result of the hasher (stable or not), or null when the file could not be read (logged).</returns>
+    /// <returns>The result of the hasher, or null when the file could not be read (logged).</returns>
     /// <exception cref="OperationCanceledException">The run was cancelled while the file was read.</exception>
     private FileHashResult? ComputeHashOrNull(string filePath)
     {
@@ -507,8 +461,8 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 
     private string BuildSummary() =>
         string.Format(CultureInfo.InvariantCulture,
-            "BitRot={0} Modified={1} ModifiedNoHashChange={2} Missing={3} New={4} Ok={5} Errors={6} Unstable={9} UnreadableDirectories={7} NotReportedMissingBecauseUnreadable={8}",
-            BitRotSuspectCount, ModifiedCount, ModifiedNoHashChangeCount, MissingOnDiskCount, NewOnDiskCount, OkCount, ErrorCount, UnreadableDirectories.Count, UnreadableProtectedCount, UnstableCount);
+            "BitRot={0} Modified={1} ModifiedNoHashChange={2} Missing={3} New={4} Ok={5} Errors={6} UnreadableDirectories={7} NotReportedMissingBecauseUnreadable={8}",
+            BitRotSuspectCount, ModifiedCount, ModifiedNoHashChangeCount, MissingOnDiskCount, NewOnDiskCount, OkCount, ErrorCount, UnreadableDirectories.Count, UnreadableProtectedCount);
 
     protected override void Dispose(bool disposing)
     {

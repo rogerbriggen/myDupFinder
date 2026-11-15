@@ -30,9 +30,6 @@ public class MyDupFinderScanJobDTO
     /// but NTFS can leave the directory entry of a hard link stale when the file was changed through another link (also after writing has finished).
     /// A change made that way can then be missed by refresh (the file counts as unchanged, the old hash stays) and by check without hash check (reported Ok).
     /// Only recommended for trees without hard links.
-    /// Hashing: the check that detects a file that changes while it is read always uses size and last write time of the open file. The difference is what is stored with a stable hash:
-    /// with false the size and last write time of the open file (they belong to the hash), with true the values of the directory listing (so that the next refresh,
-    /// which compares the listing with the database, sees the file as unchanged), even if the file changed between the listing and the hashing.
     /// </summary>
     public bool TrustDirectoryMetadata { get; set; }
 

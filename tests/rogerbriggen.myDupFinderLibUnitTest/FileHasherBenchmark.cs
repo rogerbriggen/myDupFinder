@@ -78,7 +78,7 @@ public class FileHasherBenchmark : IDisposable
         {
             int captured = size;
             var hasher = new FileHasher(captured);
-            variants.Add(new Variant($"FileHasher {Label(captured)}", path => hasher.Compute(path).Hash!));
+            variants.Add(new Variant($"FileHasher {Label(captured)}", path => hasher.Compute(path).Hash));
         }
         // FileStream with its own buffering (4096, the default) against without (0), read in blocks of 1 MB and 4 MB, SequentialScan in both
         foreach (int size in new[] { 1024 * 1024, 4 * 1024 * 1024 })
