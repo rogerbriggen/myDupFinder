@@ -82,3 +82,29 @@ A third benchmark, `Check_IgnoreBasePath_MovedTree_ReportsTimings`, measures the
 4. Writes one line with the total time and the stage times. The benchmark fails unless all files are reported as moved (`ModifiedNoHashChange`), none as new or missing and no error occurred.
 
 Numbers before and after the dictionary lookup are in the Result section of step 4 in [speed-up-plan.md](speed-up-plan.md).
+
+## Find-dups benchmark
+
+`FindDupsBenchmark` (step 5 of the plan) measures the find-duplicates job in all four modes on two generated databases. Same `MYDUPFINDER_BENCHMARK=1` gate. Run it with `--filter "FullyQualifiedName~FindDupsBenchmark"`, or only the main one with `--filter "FullyQualifiedName~FindDups_AllModes"`.
+
+`MYDUPFINDER_BENCHMARK_FILES` is the number of rows **per database** (default 100000). No files are created on disk: the generator (`FindDupsTestData` in the test project, seeded `Random`, so the same options always give the same databases) writes the rows straight into two new databases in batches of 5000 (about 15 s for 2 x 100000 rows; this is not part of the times).
+
+The databases: the base database has paths under `/bench/base`, the second one under `/bench/second`. 15 % of the rows of each database are copies of another row of the same database (duplicate hashes inside one database), 0.2 % have no hash. The second database is a changed copy of the base one: about 40 % of its rows have the same relative path and the same hash as the base row (`Duplicate`), 8 % the same path and another hash (`Changed`), 12 % the hash of another base file at another path (`Moved`), 12 % copies of a file of the second database, 8 % new files, and 20 % the same content at a different path. For 100000 rows that makes 84966 distinct hashes in the base database, 73445 in the second one and 57330 in common.
+
+`FindDups_AllModes_ReportTimings` runs the four modes (same database with `FindOnlyDups` and `FindDupsTheWholeLot`, two databases with each) and prints one table row per mode:
+
+- **Query part**: the time of the database queries of the mode on a database that is already open (same-db only dups: `FindDupsInSameDB`; same-db whole lot: `GetAllScanItems`; two databases, only dups: `FindDupsInDifferentDBs`; two databases, whole lot: `GetAllScanItems` and `GetAllScanItemsFromOtherDB`). Includes materializing the rows.
+- **Total with report**: the complete job from a new runner to the finished report file: open the database, queries, build the rows, summary, write the CSV report. The report writer is not streaming: all rows are in memory.
+- **Report rows**: lines in the report without the header.
+- **Peak managed memory above start**: the highest managed heap size (sampled every 5 ms, includes garbage that is not collected yet) during the total run minus the heap size after a full collection before it.
+
+A mode that fails (before step 5 the cross-database only-dups query fails with `too many SQL variables` above about 32500 distinct hashes in the second database) is printed as `FAILED: ...` and does not stop the other modes; the benchmark fails at the end.
+
+Two more benchmarks in the same class (same gate):
+
+- `CrossDatabaseQuery_ReferenceVersusAttached_ReportsTimings` times the cross-database only-dups query alone, with a growing number of distinct hashes in the second database (`MYDUPFINDER_BENCHMARK_HASHES`, comma separated, default `10000,30000,100000,300000`), for the implementation from before step 5 (`ReferenceFindDups` in the test project) and for the attached query.
+- `CrossDatabaseQuery_AsymmetricPairs_ReportTimings` times the same query for databases of very different sizes (300000 / 10, 300000 / 1000, 10 / 300000, 1000 / 300000 and 300000 / 300000 base / second rows, each with a high and a low share of common hashes; about a minute): the old query, the `EXISTS` form, the `IN` form and the form the code chooses, best of two runs, materializing the rows.
+- `CrossDatabaseQuery_SizeEstimate_ReportsCost` times the size estimate that chooses the form (`MAX(rowid)`) against `COUNT(*)` (`MYDUPFINDER_BENCHMARK_FILES` rows, default 300000).
+- `Tracking_MemoryOfTheRows_ReportsComparison` prints the managed memory of the rows of one query (`MYDUPFINDER_BENCHMARK_FILES` rows) with and without change tracking.
+
+Numbers are in the Result section of step 5 in [speed-up-plan.md](speed-up-plan.md).

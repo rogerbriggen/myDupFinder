@@ -162,6 +162,68 @@ The enumerate stage is the stable comparison: the safe default spends 0.6 to 0.7
    - That order is not redundant: `GroupId` values are handed out in iteration order, and in cross-database mode the order also decides pairing (last entry wins for a repeated relative path, first base row claims a match). The later report sort does not undo this.
    - Define a deterministic grouping and pairing rule that does not depend on query order, cover it with tests, and only then reduce the SQL ordering.
 
+### Result
+
+Implemented as items 1 and 2 (without the projection), and item 3 in a different way: the sort was **not** reduced, the grouping rule was **documented, not changed**, and the sort was made total. The report writer is still not streaming: all rows of a job are in memory, the report is built from lists and written at the end (out of scope here).
+
+**1. Cross-database only-dups query.** [DupFinderDB.cs](../src/rogerbriggen.myDupFinderDB/DupFinderDB.cs) attaches the second database to the connection of the base database (`ATTACH DATABASE @p0 AS dupfinder_second`, the path is a parameter) and runs one query:
+
+```sql
+SELECT s.* FROM ScanItems AS s
+WHERE s.FileSha512Hash <> ''
+  AND EXISTS (SELECT 1 FROM dupfinder_second.ScanItems AS o WHERE o.FileSha512Hash = s.FileSha512Hash)
+ORDER BY s.FileSha512Hash, s.FilenameAndPath, s.Id
+```
+
+Plan: `SCAN s USING INDEX IX_ScanItems_FileSha512Hash` / `SEARCH o EXISTS USING COVERING INDEX IX_ScanItems_FileSha512Hash (FileSha512Hash=?)` / `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY`. The same plan on a second database from the first migration only (no `FilenameAndPath` index).
+
+- **Two SQL forms, chosen at run time (review finding).** The form above (`EXISTS`) always walks the whole hash index of the base database. With a big base and a tiny second database that is much slower than the old query, which only searched the base index for the supplied hashes. The planner does not decide this (no statistics, and the second database must not be analyzed), so the plan of each form is fixed: `EXISTS` = `SCAN s USING INDEX IX_ScanItems_FileSha512Hash` / `SEARCH o EXISTS USING COVERING INDEX IX_ScanItems_FileSha512Hash (FileSha512Hash=?)` / `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY`; `IN` (`... s.FileSha512Hash IN (SELECT o.FileSha512Hash FROM dupfinder_second.ScanItems AS o WHERE o.FileSha512Hash <> '')`) = `SEARCH s USING INDEX IX_ScanItems_FileSha512Hash (FileSha512Hash=?)` / `LIST SUBQUERY 1` / `SCAN o USING COVERING INDEX IX_ScanItems_FileSha512Hash` / `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY`. A third form (`CROSS JOIN` with the distinct hashes of the second database) was measured and is never better than `IN` (and needs a full sort). Measured crossover (300000 base rows, 3000 to 150000 second rows): `IN` is faster up to a base about 3 times the size of the second database, equal at about 3 to 4 times, and `EXISTS` is faster beyond. The code reads the size of both tables with `SELECT MAX(rowid)` (one seek to the end of the table: 0.06 ms on 300000 rows, against 2.3 ms for `COUNT(*)`, which scans an index and grows with the table; it is an upper bound of the row count, a table with many deleted rows looks bigger, which can only cost time) and uses `IN` if the second table is less than a third of the base table, `EXISTS` otherwise. Nothing is loaded into client memory or passed as parameters; the result, the order, the null rule and the connection handling are the same for both forms (all equivalence tests run both forms and the chosen one).
+- **Asymmetric sizes** (`CrossDatabaseQuery_AsymmetricPairs_ReportTimings`, file databases, seconds, best of two, rows materialized as entities; "before" = old filter-list query):
+
+| Base rows | Second rows | Common share | Matching rows | Before | `EXISTS` | `IN` | Chosen |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 300000 | 10 | 100 % | 10 | 0.003 | 0.055 | 0.001 | `IN`, 0.001 |
+| 300000 | 10 | 0 % | 0 | 0.001 | 0.055 | 0.001 | `IN`, 0.001 |
+| 300000 | 1000 | 100 % | 1000 | 0.022 | 0.080 | 0.013 | `IN`, 0.013 |
+| 300000 | 1000 | 1 % | 10 | 0.012 | 0.071 | 0.006 | `IN`, 0.006 |
+| 10 | 300000 | 100 % (10 distinct hashes) | 10 | 0.044 | 0.001 | 0.049 | `EXISTS`, 0.001 |
+| 10 | 300000 | 0 % | 0 | FAILED (variables) | 0.001 | 0.166 | `EXISTS`, 0.001 |
+| 1000 | 300000 | 100 % (1000 distinct hashes) | 1000 | 0.058 | 0.010 | 0.060 | `EXISTS`, 0.010 |
+| 1000 | 300000 | 1 % | 1000 | FAILED (variables) | 0.009 | 0.186 | `EXISTS`, 0.009 |
+| 300000 | 300000 | 90 % | 270000 | FAILED (variables) | 2.450 | 2.583 | `EXISTS`, 2.448 |
+| 300000 | 300000 | 1 % | 3000 | FAILED (variables) | 0.157 | 0.272 | `EXISTS`, 0.157 |
+
+- **What the old code did.** It loaded all distinct non-empty hashes of the second database into a list and passed the list back as a `Contains` filter. That works up to about 32500 distinct hashes and fails above about 32700 with `SQLite Error 1: 'too many SQL variables'` (limit 32766 variables; measured 32500 ok, 32700 failed), so the job failed with a second database of more than that many distinct hashes (100000 rows per database: 73445 distinct hashes, failed). Below the limit the time grows faster than linear.
+- **Result is the same.** Same rows, null exactly when the second database has no non-empty hash (an empty list when it has some but nothing matches), rows without a hash in the base database never match, ordered by hash (and now by path and key, see 3). The old implementation is kept as `ReferenceFindDups` in the test project, with equivalence tests over 12 hand-made database pairs and 5 generated ones.
+- **The second database is not modified.** No migration, no pragma, no schema change; it is opened by SQLite through the attach only. Tests compare size, time stamp and SHA-256 of the file, and the file list of the directory, before and after, for a database in WAL mode, in rollback mode and from the first migration only (no migration history row added, no index added), with no other connection open: nothing changed, no `-wal`, `-shm` or journal file was left. SQLite could write to the file only if the attach was the last connection to a WAL database that has uncheckpointed data in its `-wal` file (the close then checkpoints), which is also what the old code did through its own connection. **Not read-only at the SQLite level:** `ATTACH 'file:...?mode=ro'` fails with `unable to open database` when the base connection was opened with a plain path, because the SQLite provider only enables URI file names for a connection whose data source starts with `file:` (demonstrated: the same attach works if the main connection is opened as `file:...`). Changing how every connection is opened was out of scope.
+- **Connection handling.** The attach belongs to the connection, so the context opens the connection explicitly, attaches, runs the query, detaches in a `finally` (if the detach fails the connection is removed from the pool so the attachment cannot leak) and closes the connection again if it was closed before. Tests: twice in a row, another query afterwards, the pooled connection of the next context has no attachment, a failing query (no `ScanItems` table, not a database file) detaches and leaves the context usable.
+- **Missing second file.** Before: the old code opened the second database with EF Core, SQLite created an empty file (0 bytes, left behind) and the query failed with `SQLite Error 1: 'no such table: ScanItems'`. Now: `FileNotFoundException` with the full path before anything is opened, no file is created. The same check was added to `GetAllScanItemsFromOtherDB` (whole-lot mode), which had the same open path.
+- **Second path equal to the base path.** Before and now the same: no error, every base row with a hash is reported (each row is its own match); also with another spelling of the same path.
+
+**2. No change tracking.** `FindDupsInSameDB`, `GetAllScanItems`, `GetAllScanItemsFromOtherDB` and the new query use `AsNoTracking()`. No consumer relies on identity resolution: the runners read properties, and use the rows as members of a `HashSet` and as dictionary values by reference (`consumedSecond`, `movedBase`, `movedSecond`, the relative-path dictionary), but `ScanItemDto` does not override `Equals`, every row of one result list is a different object with or without tracking (the key is unique, so no row is returned twice), the base and the second rows come from two different contexts, and a list is never mixed with the result of another query on the same context. Memory of 100000 rows (`Tracking_MemoryOfTheRows_ReportsComparison`): tracked, context alive 113.5 MB; the list alone after the context is gone 71.9 MB; not tracked 71.2 MB. So tracking costs about 42 MB per 100000 rows as long as the context lives, which in the runners is the whole job. No projection to a smaller type yet.
+
+**3. Grouping and sort.** The SQL sort is kept and made total: hash, path, primary key (`GetAllScanItems`, `GetAllScanItemsFromOtherDB`, `FindDupsInSameDB` and the cross-database query). Plans (empty-table plans as in step 3, populated tables the same): `GetAllScanItems` and `GetAllScanItemsFromOtherDB`: `SCAN s USING INDEX IX_ScanItems_FileSha512Hash` + `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY` (before: `LAST TERM`); `FindDupsInSameDB`: `SEARCH ScanItems USING INDEX IX_ScanItems_FileSha512Hash (FileSha512Hash=?)` with `LIST SUBQUERY 1` / `SCAN ScanItems USING COVERING INDEX IX_ScanItems_FileSha512Hash`, plus `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY` (before: no sort at all); so the order by hash comes from the index and only the rows of one hash are sorted by path and key, never the whole result. The rules as they are (and were) are written in the XML documentation of `FindDupsInSameDB` and `FindDupsInDifferentDBs` and in the README: GroupIds are handed out in the order hash, path, key; in the whole-lot cross-database mode the last second row of a relative path in that order is the one that can be paired, and the first base row of a relative path claims it. Tests with hand-made databases pin each rule including ties, and the complete report of all four modes is byte-identical between two runs and between three insertion orders (as inserted, shuffled, reversed; the plain-SQL insert keeps the physical order, which EF Core does not). Without the key in the sort these tests fail (checked), so they would catch a regression. There is no case in which the report depends on the insertion order with the total order.
+
+**Benchmark** (`FindDupsBenchmark`, see [benchmark.md](benchmark.md); Release, Windows 11, one machine that varies by tens of percent between runs; peak = managed heap above start):
+
+100000 rows per database (84966 / 73445 distinct hashes, 57330 in common):
+
+| Mode | Query before (s) | Query after (s) | Total before (s) | Total after (s) | Report rows | Peak before (MB) | Peak after (MB) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| same database, only dups | 0.38 | 0.24 | 0.38 | 0.28 | 26028 | 42 | 30 |
+| same database, whole lot | 1.15 | 0.77 | 1.16 | 0.96 | 100000 | 157 | 111 |
+| two databases, only dups | FAILED (`too many SQL variables`) | 0.60 | FAILED | 0.71 | 70937 | - | 66 |
+| two databases, whole lot | 2.04 | 1.64 | 2.63 | 2.02 | 200000 | 305 | 218 |
+
+Sizes where the old query still works (query part / total, seconds; peak MB), before then after:
+
+| Rows per database | two databases, only dups before | two databases, only dups after | report rows |
+| --- | --- | --- | --- |
+| 20000 (14684 distinct hashes in the second) | 1.17 / 1.12 s, 35 MB | 0.13 / 0.16 s, 16 MB | 14059 |
+| 40000 (29351 distinct hashes in the second) | 3.69 / 3.68 s, 72 MB | 0.26 / 0.31 s, 33 MB | 28498 |
+
+The cross-database query alone (`CrossDatabaseQuery_ReferenceVersusAttached_ReportsTimings`; the second database has the given number of distinct hashes and half of the base rows match): 10000 hashes 0.59 s before, 0.08 s after; 30000: 3.79 s, 0.26 s; 100000: failed, 0.99 s; 300000: failed, 2.96 s. The other modes only gain from the lighter rows (no tracking) and are otherwise unchanged.
+
 ## Step 6 — Hash I/O
 
 - Open files with `FileOptions.SequentialScan`, read into a pooled buffer, and feed `IncrementalHash`. Replace `BitConverter.ToString(...).Replace("-", "")` with `Convert.ToHexString`. Put this in one shared `FileHasher`; the code is duplicated in four runners.

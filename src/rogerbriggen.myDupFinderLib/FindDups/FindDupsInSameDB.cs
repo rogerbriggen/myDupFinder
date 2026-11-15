@@ -15,6 +15,23 @@ namespace RogerBriggen.MyDupFinderLib;
 /// <summary>
 /// Finds duplicates inside a single database by comparing SHA-512 hashes.
 /// Items sharing a hash share a GroupId in the report.
+/// <para>
+/// Grouping rule (the same in both modes). The database returns the rows in one total order: hash, then path
+/// (<c>FilenameAndPath</c>), then primary key (binary comparison of the text). The GroupIds are handed out in that order,
+/// starting with 1, one per distinct hash, at the first row of the hash. The hash is the whole text, so rows without a
+/// hash (empty text) form a hash of their own: several of them are duplicates of each other. The report writer sorts
+/// afterwards (category, GroupId, source, path) and does not change the GroupIds.
+/// </para>
+/// <list type="bullet">
+/// <item><description><c>FindOnlyDups</c>: only the rows of a hash that occurs more than once are reported (all <c>Duplicate</c>).
+/// The GroupIds count the reported hashes: the smallest reported hash gets 1, the next one 2, and so on.</description></item>
+/// <item><description><c>FindDupsTheWholeLot</c>: every row is reported. A hash with more than one row is <c>Duplicate</c> and
+/// its rows share a GroupId, a hash with one row is <c>Unique</c> and has a GroupId of its own. The GroupIds count all distinct
+/// hashes in hash order, so the GroupId of a hash is its rank among all hashes of the database, and the numbers of the
+/// duplicate groups have gaps where a unique file is.</description></item>
+/// </list>
+/// Rows with the same hash and the same path are different rows (different primary key) and are reported in the order of their
+/// primary key. The report does not depend on the order in which the rows were inserted.
 /// </summary>
 internal class FindDupsInSameDB : BasicRunner<FindDupsInSameDB>, IFindDupsRunner
 {

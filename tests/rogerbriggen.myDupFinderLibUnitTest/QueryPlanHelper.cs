@@ -106,12 +106,36 @@ internal static class QueryPlanHelper
         return command.Sql.Trim() + Environment.NewLine + ExplainSql(databaseFile, command);
     }
 
+    /// <summary>
+    /// Runs the production query that attaches a second database (<see cref="DubFinderDB.FindDupsInDifferentDBs(DubFinderContext, string)"/>)
+    /// against a capturing context and returns the plan of the last SELECT that contains <paramref name="sqlMustContain"/>. The plan is
+    /// made on a connection that has the second database attached in the same way as the production code does.
+    /// </summary>
+    public static string ExplainWithAttached(string databaseFile, string secondDatabaseFile, Action<DubFinderContext> query, string sqlMustContain, out CapturedCommand command)
+    {
+        var capture = new SqlCaptureInterceptor();
+        using (var context = CreateCapturingContext(databaseFile, capture))
+        {
+            query(context);
+        }
+        command = capture.Commands.LastOrDefault(c => c.Sql.Contains(sqlMustContain, StringComparison.Ordinal))
+            ?? throw new InvalidOperationException("The query sent no matching SELECT command.");
+        return ExplainSql(databaseFile, command, System.IO.Path.GetFullPath(secondDatabaseFile), DubFinderDB.SecondDatabaseAlias);
+    }
+
     /// <summary>Runs EXPLAIN QUERY PLAN for the command and returns the plan lines (the detail column), indented by their nesting.</summary>
-    public static string ExplainSql(string databaseFile, CapturedCommand command)
+    public static string ExplainSql(string databaseFile, CapturedCommand command, string? attachFile = null, string? attachAlias = null)
     {
         ArgumentNullException.ThrowIfNull(command);
         using var connection = new SqliteConnection($"Data Source={databaseFile}");
         connection.Open();
+        if (attachFile is not null)
+        {
+            using var attach = connection.CreateCommand();
+            attach.CommandText = "ATTACH DATABASE $file AS " + attachAlias;
+            attach.Parameters.AddWithValue("$file", attachFile);
+            attach.ExecuteNonQuery();
+        }
         using var explain = connection.CreateCommand();
         explain.CommandText = "EXPLAIN QUERY PLAN " + command.Sql;
         foreach (var (name, value) in command.Parameters)

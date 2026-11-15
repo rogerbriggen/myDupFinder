@@ -200,6 +200,29 @@ Notes:
 
 - `FindOnlyDups` emits only `Duplicate` rows. In the cross-DB case only the `Base` side is included (hash-only intersection — there is no path/changed/moved analysis in this mode).
 - The report is sorted so that paired rows appear together (by `Category`, then `GroupId`, then `Source`, then path).
+- In a cross-DB job the second database is only read (it is attached to the connection of the base database, not migrated and not changed) and must exist: a missing file is an error and is not created.
+
+#### How `GroupId`s are assigned, and which row is paired
+
+The database returns the rows of each side in one fixed order: by hash, then by path, then by primary key (binary text comparison). The `GroupId`s are handed out in that order, starting with 1, so the report does not depend on the order in which the rows were inserted into the database. The report sort above does not renumber them. Two rows can have the same hash and the same path (they are different rows with different keys); they come in the order of their keys.
+
+A row without a hash (empty `FileSha512Hash`) counts as a hash of its own in same-DB jobs (several of them are duplicates of each other). In cross-DB jobs it never matches by hash, but it can still be paired by relative path with a row without a hash on the other side (`Duplicate`).
+
+| Job | GroupIds |
+|---|---|
+| Same DB, `FindOnlyDups` | One per hash that occurs more than once, in hash order: the smallest such hash gets 1, the next 2, and so on. |
+| Same DB, `FindDupsTheWholeLot` | One per distinct hash, in hash order, `Duplicate` and `Unique` alike: the `GroupId` of a hash is its rank among all hashes of the database, so the numbers of the duplicate groups have gaps where a unique file is. |
+| Cross-DB, `FindOnlyDups` | One per hash, in hash order, for the base rows whose hash exists in the second database (the smallest such hash gets 1). Only the base side is reported. |
+| Cross-DB, `FindDupsTheWholeLot` | In four phases, see below. |
+
+Cross-DB `FindDupsTheWholeLot`:
+
+1. **By relative path** (the path without `PathBase`, compared ignoring case). The rows of the second database are indexed by relative path. **If several second rows have the same relative path, the last one in the order above wins** (largest hash, then path, then key); the others cannot be paired by path. The base rows are then visited in the order above, and **the first base row of a relative path takes the second row** (so with several base rows of one relative path it is the one with the smallest hash, then path, then key); later base rows of the same relative path find it taken. Every pair gets the next `GroupId`: `Duplicate` if the hashes are equal, `Changed` otherwise.
+2. **By hash** (the rows left over, with a non-empty hash): every hash that occurs on both sides, in the order of its first base row, gets the next `GroupId` for all its base and all its second rows: `Moved`.
+3. **Missing**: the base rows still left over, one `GroupId` each, in the order above.
+4. **New**: the second rows still left over, one `GroupId` each, in the order above.
+
+So a `GroupId` is unique within a report, but its number is only a label: it says which rows belong together, not how important they are, and the numbers of one category are not contiguous.
 - For a "file-explorer-like" UI, treat each row as one physical file on disk. Use `Source` to know which side it lives on, `GroupId` to find its partners, and `FilenameAndPath` to actually act on it (e.g. delete).
 
 ### Refresh Jobs
