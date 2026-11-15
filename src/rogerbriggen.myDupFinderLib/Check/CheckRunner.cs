@@ -63,8 +63,8 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 
     /// <summary>
     /// Files, bytes and stage times of the current run. Files that are not hashed (SkipHashCheck) count as files
-    /// but add no hashed bytes. The enumerate time covers the directory listing including the metadata (size, timestamps) of the files,
-    /// the same as in scan and refresh. The database time is the initial load of the rows.
+    /// but add no hashed bytes. The enumerate time covers the directory listing and the metadata (size, timestamps) of the files (one call per file
+    /// unless TrustDirectoryMetadata is set), the same as in scan and refresh. The database time is the initial load of the rows.
     /// </summary>
     internal ThroughputTracker Throughput { get; private set; }
 
@@ -174,6 +174,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             }
 
             long hashedBytes = 0;
+            int claimedBefore = seenIds.Count;
             try
             {
                 hashedBytes = ProcessFile(currentEntry, basePath, existingByPath, relativeIndex, seenIds, writer);
@@ -184,6 +185,13 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             {
                 _logger.LogError(ex, "Check: Error processing file {file}", currentFile);
                 ErrorCount++;
+                // The file exists in the listing, so its row must not be reported as missing: claim the row that belongs to it
+                // (exact path, or with IgnoreBasePath the first unclaimed row with the same relative path)
+                var claimed = seenIds.Count != claimedBefore ? null : existingByPath.TryGetValue(currentFile, out var exactRow) ? exactRow : relativeIndex?.Find(currentFile, seenIds);
+                if (claimed is not null)
+                {
+                    seenIds.Add(claimed.Id);
+                }
             }
 
             Throughput.AddFile(hashedBytes);
@@ -250,8 +258,20 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     }
 
     /// <returns>The number of bytes that were hashed for this file (0 when it was not hashed or hashing failed).</returns>
-    private long ProcessFile(FileEntryInfo currentEntry, string basePath, Dictionary<string, ScanItemDto> existingByPath, RelativePathIndex? relativeIndex, HashSet<Guid> seenIds, TextWriter writer)
+    private long ProcessFile(FileEntryInfo listedEntry, string basePath, Dictionary<string, ScanItemDto> existingByPath, RelativePathIndex? relativeIndex, HashSet<Guid> seenIds, TextWriter writer)
     {
+        // Authoritative values from the file itself (one call) unless TrustDirectoryMetadata is set; read now, right before the file is processed.
+        // A failure is an error of this file (the caller counts and logs it, the row of the file is then not reported as missing).
+        long metadataStart = Throughput.StartStage();
+        FileEntryInfo currentEntry;
+        try
+        {
+            currentEntry = FileMetadata.Resolve(listedEntry, CheckJobDTO.ScanJobDTO.TrustDirectoryMetadata);
+        }
+        finally
+        {
+            Throughput.EndStage(ThroughputStage.Enumerate, metadataStart);
+        }
         string currentFile = currentEntry.FullPath;
         long fileSize = currentEntry.Length;
         DateTime fileLastModificationUTC = currentEntry.LastWriteTimeUtc;

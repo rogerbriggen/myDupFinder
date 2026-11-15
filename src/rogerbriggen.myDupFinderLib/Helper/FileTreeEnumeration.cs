@@ -90,9 +90,12 @@ public sealed class FileTreeEnumerationSource : IFileEnumerationSource
 /// <para>
 /// <b>Known limitation:</b> the metadata is that of the directory entry. On NTFS the entry is updated lazily, so for hard linked
 /// files (the entry of another link may be stale) and for files that are being written the size and the last write time can be older
-/// than the real values that <see cref="FileInfo"/> reads from the file itself. The values are also older by the time the file is hashed,
-/// since the enumeration runs ahead of the hashing. A caller that needs stable values has to re-check size and time after reading the
-/// file (step 6 of docs/speed-up-plan.md).
+/// than the real values that <see cref="FileInfo"/> reads from the file itself (a change through another hard link may not show up in this entry
+/// at all, also after writing has finished). The values are also older by the time the file is hashed, since the enumeration runs ahead of the hashing.
+/// <b>Therefore scan, refresh and check only rely on these values when the job setting <c>TrustDirectoryMetadata</c> is set</b> (default false):
+/// by default they read size and times from the file itself, with one call per file, when the file is processed (<see cref="FileMetadata"/>).
+/// With the setting a change through another hard link can be missed. A caller that needs stable values even then has to re-check size and time
+/// after reading the file (step 6 of docs/speed-up-plan.md).
 /// </para>
 /// Not thread safe.
 /// </summary>

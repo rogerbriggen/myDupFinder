@@ -490,6 +490,11 @@ public class ScanJobDBInserts : IDisposable
 
     internal static ScanItemDto? GetItemById(DubFinderContext context, Guid id) => context.Set<ScanItemDto>().AsNoTracking().FirstOrDefault(s => s.Id == id);
 
+    /// <summary>
+    /// Number of resume lookups (<see cref="IsAlreadyInDB"/>) done so far. Only for tests: a scan into an empty database must not do any.
+    /// </summary>
+    internal int ResumeLookupCount { get; private set; }
+
     public bool IsAlreadyInDB(ScanItemDto si)
     {
         if (_dbContext is null)
@@ -498,6 +503,7 @@ public class ScanJobDBInserts : IDisposable
         }
         lock (dbContextLock)
         {
+            ResumeLookupCount++;
             int itemCount = CountAlreadyInDB(_dbContext, si);
             if (itemCount == 0)
             {

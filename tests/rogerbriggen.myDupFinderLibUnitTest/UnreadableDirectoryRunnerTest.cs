@@ -96,8 +96,11 @@ public class UnreadableDirectoryRunnerTest : IDisposable
         return context.ScanItems!.AsNoTracking().Select(i => i.FilenameAndPath).ToList();
     }
 
+    // These tests are about unreadable directories and use a made-up file list (the listed files do not exist on disk), so the listed values are
+    // trusted. The default mode, which reads every file, is covered by TrustDirectoryMetadataTest.
     private MyDupFinderRefreshJobDTO RefreshJob() => new MyDupFinderRefreshJobDTO
     {
+        TrustDirectoryMetadata = true,
         JobName = "UnreadableTest",
         OriginComputer = "TestPC",
         ScanName = "TestScan",
@@ -116,6 +119,7 @@ public class UnreadableDirectoryRunnerTest : IDisposable
             BasePath = basePath ?? _basePath,
             DatabaseFile = _dbPath,
             ReportPath = _reportDir,
+            TrustDirectoryMetadata = true,
         },
         SkipHashCheck = true,
         IgnoreBasePath = ignoreBasePath,

@@ -13,7 +13,8 @@ namespace RogerBriggen.MyDupFinderLib;
 /// <summary>
 /// The batching wrapper of the scan around the shared file enumeration (<see cref="FileTreeEnumeration"/>):
 /// turns the next files into <see cref="ScanItemDto"/> objects in <see cref="ScanItemCollection"/>.
-/// Size and timestamps come from the directory listing, there is no further file system call per file.
+/// The items carry size and timestamps from the directory listing; unless the job sets TrustDirectoryMetadata, the runner replaces them with the values of
+/// the file itself (<see cref="TryRefreshMetadata"/>, one call per file) when the item is processed, because the directory entry can be stale.
 /// Directories that cannot be read are logged as a warning when they are found, the enumeration goes on.
 /// </summary>
 public class EnumerateFilesFromDiscToIndex : IEnumerateFilesToIndex, IDisposable
@@ -114,6 +115,32 @@ public class EnumerateFilesFromDiscToIndex : IEnumerateFilesToIndex, IDisposable
         bool hasNext = _files.MoveNext();
         UnreadableDirectoryLog.LogNew(_logger, _files.UnreadableDirectories, ref _unreadableLogged);
         return hasNext;
+    }
+
+    /// <inheritdoc />
+    public bool TryRefreshMetadata(ScanItemDto item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (_scanJobDto.TrustDirectoryMetadata)
+        {
+            return true;
+        }
+        try
+        {
+            FileEntryInfo metadata = FileMetadata.Read(item.FilenameAndPath);
+            item.FileSize = metadata.Length;
+            item.FileCreationUTC = metadata.CreationTimeUtc;
+            item.FileLastModificationUTC = metadata.LastWriteTimeUtc;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Same handling as before step 4, when the attribute reading failed in the enumeration: error log, error count, the file is not scanned
+            _logger.LogError(ex, "There was an exception during file attribute reading of file {file}", item.FilenameAndPath);
+            ErrorCount += 1;
+            CurrentCount -= 1;
+            return false;
+        }
     }
 
     public void Dispose()

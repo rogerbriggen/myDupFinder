@@ -121,6 +121,15 @@ internal class ScanRunnerSingleThread : BasicRunner<ScanRunnerSingleThread>, ISc
                         break;
                     }
 
+                    //Authoritative size and timestamps from the file itself (unless TrustDirectoryMetadata), read right before the file is processed
+                    long metadataStart = Throughput.StartStage();
+                    bool metadataOk = _enumerateFiles.TryRefreshMetadata(si);
+                    Throughput.EndStage(ThroughputStage.Enumerate, metadataStart);
+                    if (!metadataOk)
+                    {
+                        continue;
+                    }
+
                     //Filter
                     if (bFilter)
                     {

@@ -64,7 +64,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
     /// <summary>
     /// Files, bytes and stage times of the current run. Unchanged files count as files but add no hashed bytes.
-    /// The enumerate time covers the directory listing including the metadata (size, timestamps) of the files, the same as in scan and check.
+    /// The enumerate time covers the directory listing and the metadata (size, timestamps) of the files (one call per file unless TrustDirectoryMetadata is set), the same as in scan and check.
     /// </summary>
     internal ThroughputTracker Throughput { get; private set; }
 
@@ -149,8 +149,19 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 long hashedBytes = 0;
                 try
                 {
-                    long fileSize = currentEntry.Length;
-                    DateTime fileLastModificationUTC = currentEntry.LastWriteTimeUtc;
+                    // Authoritative values from the file itself (one call) unless TrustDirectoryMetadata is set; read now, right before the file is processed
+                    long metadataStart = Throughput.StartStage();
+                    FileEntryInfo metadata;
+                    try
+                    {
+                        metadata = FileMetadata.Resolve(currentEntry, RefreshJobDTO.TrustDirectoryMetadata);
+                    }
+                    finally
+                    {
+                        Throughput.EndStage(ThroughputStage.Enumerate, metadataStart);
+                    }
+                    long fileSize = metadata.Length;
+                    DateTime fileLastModificationUTC = metadata.LastWriteTimeUtc;
 
                     if (existingByPath.TryGetValue(currentFile, out var existingItem))
                     {
@@ -193,7 +204,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                             OriginComputer = RefreshJobDTO.OriginComputer,
                             ScanName = RefreshJobDTO.ScanName,
                             ScanExecutionComputer = Environment.MachineName,
-                            FileCreationUTC = currentEntry.CreationTimeUtc,
+                            FileCreationUTC = metadata.CreationTimeUtc,
                             FileLastModificationUTC = fileLastModificationUTC,
                             FileSize = fileSize
                         };

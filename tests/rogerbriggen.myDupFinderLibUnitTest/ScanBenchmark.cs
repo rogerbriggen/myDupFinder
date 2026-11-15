@@ -61,12 +61,20 @@ public class ScanBenchmark : IDisposable
         }
     }
 
+    private const string TrustVariable = "MYDUPFINDER_BENCHMARK_TRUST";
+
+    /// <summary>MYDUPFINDER_BENCHMARK_TRUST=1 runs the jobs with TrustDirectoryMetadata (no call per file), otherwise the default (metadata read from each file).</summary>
+    private static bool TrustDirectoryMetadata => Environment.GetEnvironmentVariable(TrustVariable) == "1";
+
+    private void WriteMode() => _output.WriteLine("Mode: " + (TrustDirectoryMetadata ? "TrustDirectoryMetadata=true (directory listing values)" : "default (metadata read from each file)"));
+
     private static int GetFileCount() =>
         int.TryParse(Environment.GetEnvironmentVariable(FileCountVariable), NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed > 0 ? parsed : DefaultFileCount;
 
     [BenchmarkFact]
     public void Scan_GeneratedTree_ReportsTimings()
     {
+        WriteMode();
         int fileCount = GetFileCount();
         var options = new TestTreeOptions { FileCount = fileCount, DuplicateShare = 0.2, DirectoryCount = Math.Max(1, fileCount / 20), MaxDirectoryDepth = 4 };
 
@@ -89,6 +97,7 @@ public class ScanBenchmark : IDisposable
             BasePath = tree.Root,
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
+            TrustDirectoryMetadata = TrustDirectoryMetadata,
         };
         var runner = ScanTestRunner.Run(job);
 
@@ -113,6 +122,7 @@ public class ScanBenchmark : IDisposable
     [BenchmarkFact]
     public void Rescan_GeneratedTree_ReportsResumeTimings()
     {
+        WriteMode();
         int fileCount = GetFileCount();
         var options = new TestTreeOptions
         {
@@ -140,6 +150,7 @@ public class ScanBenchmark : IDisposable
             BasePath = tree.Root,
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
+            TrustDirectoryMetadata = TrustDirectoryMetadata,
         };
         var firstRun = ScanTestRunner.Run(job);
         _output.WriteLine("First scan:  " + firstRun.Throughput.BuildSummary());
@@ -166,6 +177,7 @@ public class ScanBenchmark : IDisposable
     [BenchmarkFact]
     public void Check_IgnoreBasePath_MovedTree_ReportsTimings()
     {
+        WriteMode();
         int fileCount = int.TryParse(Environment.GetEnvironmentVariable(FileCountVariable), NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed > 0 ? parsed : 20000;
         var options = new TestTreeOptions
         {
@@ -186,6 +198,7 @@ public class ScanBenchmark : IDisposable
             BasePath = originalRoot,
             DatabaseFile = Path.Combine(_tempDir, "db", "benchmark.db"),
             ReportPath = _tempDir,
+            TrustDirectoryMetadata = TrustDirectoryMetadata,
         };
         var scanRunner = ScanTestRunner.Run(scanJob);
         Assert.Equal(IService.EServiceState.finished, scanRunner.RunnerState);
@@ -202,6 +215,7 @@ public class ScanBenchmark : IDisposable
                 BasePath = movedRoot,
                 DatabaseFile = scanJob.DatabaseFile,
                 ReportPath = _tempDir,
+                TrustDirectoryMetadata = TrustDirectoryMetadata,
             },
             IgnoreBasePath = true,
             SkipHashCheck = true,

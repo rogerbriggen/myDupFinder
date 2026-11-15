@@ -46,8 +46,10 @@ public class EnumerationEndToEndTest : IDisposable
         }
     }
 
-    [Fact]
-    public void ScanThenRefreshThenCheck_WithoutTouchingTheFiles_ShowsNoChangeAtAll()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ScanThenRefreshThenCheck_WithoutTouchingTheFiles_ShowsNoChangeAtAll(bool trustDirectoryMetadata)
     {
         var tree = TestTreeGenerator.Generate(_treeDir, new TestTreeOptions
         {
@@ -78,6 +80,7 @@ public class EnumerationEndToEndTest : IDisposable
             BasePath = _treeDir,
             DatabaseFile = _dbPath,
             ReportPath = _reportDir,
+            TrustDirectoryMetadata = trustDirectoryMetadata,
         };
         var scan = ScanTestRunner.Run(scanJob);
         Assert.Equal(IService.EServiceState.finished, scan.RunnerState);
@@ -108,6 +111,7 @@ public class EnumerationEndToEndTest : IDisposable
             BasePath = _treeDir,
             DatabaseFile = _dbPath,
             ReportPath = _reportDir,
+            TrustDirectoryMetadata = trustDirectoryMetadata,
         }, serviceProvider.GetService<ILogger<RefreshRunner>>(), serviceProvider);
         refresh.Start(CancellationToken.None);
         Assert.Equal(IService.EServiceState.finished, refresh.RunnerState);
@@ -131,6 +135,7 @@ public class EnumerationEndToEndTest : IDisposable
                 BasePath = _treeDir,
                 DatabaseFile = _dbPath,
                 ReportPath = _reportDir,
+                TrustDirectoryMetadata = trustDirectoryMetadata,
             },
         }, serviceProvider.GetService<ILogger<CheckRunner>>(), serviceProvider);
         check.Start(CancellationToken.None);

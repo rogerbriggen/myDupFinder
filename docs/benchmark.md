@@ -24,6 +24,8 @@ Use the Release configuration, Debug hashes much slower. The detailed console lo
 
 Optional: `MYDUPFINDER_BENCHMARK_FILES` sets the number of files (default 5000, about 700 MB at the default size mix).
 
+Optional: `MYDUPFINDER_BENCHMARK_TRUST=1` runs the jobs of the benchmarks with the job setting `TrustDirectoryMetadata` (size and timestamps from the directory listing, no call per file). Without it the default is measured: the metadata of every file is read from the file itself (one call per file), which is the safe mode. The benchmark prints a `Mode:` line first.
+
 ## What it does
 
 1. Generates a deterministic tree in a temporary directory: nested directories, a mix of file sizes (70 % between 64 B and 4 KB, 25 % up to 256 KB, 5 % up to 4 MB) and 20 % of the files as copies of another file. The same options always give the same tree (seeded `Random`, no external data).
@@ -46,7 +48,7 @@ Scan: 5000 files, 719.7 MB hashed in 8.3 s. Average 601.0 files/s, 86.5 MB/s. St
 - **elapsed**: wall clock time of the run from after the database was opened. It includes everything, also sleeping in the throttle.
 - **Average files/s, MB/s**: totals divided by elapsed.
 - **Stage time**: time the runner spent in
-  - `enumerate`: walking the directories, including the metadata (size, creation and last write time) that comes with the directory listing. The same in scan, refresh and check (since step 4 all three use the same enumerator and make no further file system call for the metadata),
+  - `enumerate`: walking the directories, including the metadata (size, creation and last write time) that comes with the directory listing. The same in scan, refresh and check (since step 4 all three use the same enumerator): the directory listing, and, unless `TrustDirectoryMetadata` is set, the one call per file that reads size and timestamps from the file itself,
   - `hash`: opening, reading, hashing (SHA-512) and closing the files,
   - `database`: everything done with the database, i.e. resume lookups, inserts, updates, removals and commits (check: the initial load of the rows).
 
