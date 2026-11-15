@@ -132,11 +132,11 @@ public class RunnerBatchingTest : IDisposable
         return services.BuildServiceProvider();
     }
 
-    private ScanRunnerSingleThread RunScan(ILoggerProvider? loggerProvider = null, LogLevel minimumLevel = LogLevel.Information, CancellationToken token = default, int? batchSize = null)
+    private ScanRunner RunScan(ILoggerProvider? loggerProvider = null, LogLevel minimumLevel = LogLevel.Information, CancellationToken token = default, int? batchSize = null)
     {
         using var serviceProvider = BuildServices(loggerProvider, minimumLevel);
         var dbInserts = batchSize is null ? null : new ScanJobDBInserts(serviceProvider.GetService<ILogger<ScanJobDBInserts>>(), batchSize.Value, TimeSpan.FromHours(1));
-        var runner = new ScanRunnerSingleThread(ScanJob(), serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, dbInserts);
+        var runner = new ScanRunner(ScanJob(), serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, dbInserts);
         runner.Start(token);
         return runner;
     }

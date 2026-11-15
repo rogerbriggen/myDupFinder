@@ -57,7 +57,7 @@ public class ScanResumeLookupTest : IDisposable
     }
 
     /// <summary>Runs a scan of the base path and returns the number of resume lookups it made.</summary>
-    private int Scan(string basePath)
+    private int Scan(string basePath, int hashWorkers = 1)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -71,9 +71,18 @@ public class ScanResumeLookupTest : IDisposable
             BasePath = basePath,
             DatabaseFile = _dbPath,
             ReportPath = _tempDir,
+            HashWorkers = hashWorkers,
         };
-        var runner = new ScanRunnerSingleThread(job, serviceProvider.GetService<ILogger<ScanRunnerSingleThread>>(), serviceProvider, dbInserts);
-        runner.Start(CancellationToken.None);
+        var runner = new ScanRunner(job, serviceProvider.GetService<ILogger<ScanRunner>>(), serviceProvider, dbInserts);
+        if (hashWorkers > 1)
+        {
+            // The pipeline: on its own thread and guarded by a timeout, so that a deadlock fails the test
+            PipelineTestSupport.StartGuarded(runner, CancellationToken.None);
+        }
+        else
+        {
+            runner.Start(CancellationToken.None);
+        }
         Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
         SqliteConnection.ClearAllPools();
         return dbInserts.ResumeLookupCount;
@@ -116,6 +125,56 @@ public class ScanResumeLookupTest : IDisposable
         Assert.Equal(0, Scan(tree));
 
         int lookups = Scan(tree);
+
+        Assert.Equal(FileCount, lookups);
+        Assert.Equal(FileCount, RowCount());
+    }
+
+    // ---- the same rules with the pipeline (4 hash workers) ----
+
+    [Fact]
+    public void Pipeline_FirstScanIntoAnEmptyDatabase_DoesNoResumeLookup()
+    {
+        string tree = MakeTree("treeA");
+
+        int lookups = Scan(tree, hashWorkers: 4);
+
+        Assert.Equal(0, lookups);
+        Assert.Equal(FileCount, RowCount());
+    }
+
+    [Fact]
+    public void Pipeline_ScanOfABasePathThatIsNotInTheDatabaseYet_DoesNoResumeLookup()
+    {
+        string treeA = MakeTree("treeA");
+        string treeB = MakeTree("treeB");
+        Assert.Equal(0, Scan(treeA, hashWorkers: 4));
+
+        int lookups = Scan(treeB, hashWorkers: 4);
+
+        Assert.Equal(0, lookups);
+        Assert.Equal(2 * FileCount, RowCount());
+    }
+
+    [Fact]
+    public void Pipeline_SecondScanOfTheSameBasePath_DoesOneResumeLookupPerFile_AndAddsNothing()
+    {
+        string tree = MakeTree("treeA");
+        Assert.Equal(0, Scan(tree, hashWorkers: 4));
+
+        int lookups = Scan(tree, hashWorkers: 4);
+
+        Assert.Equal(FileCount, lookups);
+        Assert.Equal(FileCount, RowCount());
+    }
+
+    [Fact]
+    public void ScanWithTheSequentialPathFirstAndThePipelineSecond_AddsNothing()
+    {
+        string tree = MakeTree("treeA");
+        Assert.Equal(0, Scan(tree, hashWorkers: 1));
+
+        int lookups = Scan(tree, hashWorkers: 4);
 
         Assert.Equal(FileCount, lookups);
         Assert.Equal(FileCount, RowCount());
