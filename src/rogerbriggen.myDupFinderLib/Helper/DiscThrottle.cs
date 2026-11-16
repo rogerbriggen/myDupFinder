@@ -8,7 +8,12 @@ namespace RogerBriggen.MyDupFinderLib;
 
 public class DiscThrottle
 {
-    private DateTime? StartTime { get; set; }
+    // Timestamp of the clock (monotonic: not affected by a change of the wall clock, for example at a daylight-saving change) when the current work period started
+    private long? _startTimestamp;
+
+    private readonly TimeProvider _timeProvider;
+
+    private readonly Action<int> _sleep;
 
     private double MinimumWorkTimeInMs { get; set; }
 
@@ -37,10 +42,20 @@ public class DiscThrottle
     /// </summary>
     /// <param name="throttlePercent">1 - 70 Percent of throtteling</param>
     /// <param name="MinimumWorkTimeInMs">No thotteling until this time in miliseconds was worked</param>
-    public DiscThrottle(uint throttlePercent, double minimumWorkTimeInMs)
+    public DiscThrottle(uint throttlePercent, double minimumWorkTimeInMs) : this(throttlePercent, minimumWorkTimeInMs, null, null)
+    {
+    }
+
+    /// <param name="throttlePercent">1 - 70 Percent of throtteling</param>
+    /// <param name="minimumWorkTimeInMs">No thotteling until this time in miliseconds was worked</param>
+    /// <param name="timeProvider">Only for tests: the clock. Default: <see cref="TimeProvider.System"/>.</param>
+    /// <param name="sleep">Only for tests: called with the milliseconds to wait (one slice of at most 1000 ms). Default: <see cref="Thread.Sleep(int)"/>. A test advances its fake clock here.</param>
+    internal DiscThrottle(uint throttlePercent, double minimumWorkTimeInMs, TimeProvider? timeProvider, Action<int>? sleep)
     {
         ThrottlePercent = throttlePercent;
         MinimumWorkTimeInMs = minimumWorkTimeInMs;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _sleep = sleep ?? (ms => Thread.Sleep(ms));
     }
 
     /// <summary>
@@ -63,19 +78,15 @@ public class DiscThrottle
         }
 
         //Not started... start it
-        if (StartTime is null)
+        if (_startTimestamp is null)
         {
-            StartTime = DateTime.Now;
+            _startTimestamp = _timeProvider.GetTimestamp();
             return;
         }
         //We have to wait
-        var timeSpan = DateTime.Now - StartTime;
-        if (timeSpan is null)
-        {
-            return;
-        }
+        TimeSpan timeSpan = _timeProvider.GetElapsedTime(_startTimestamp.Value);
         //Check if minimum is done
-        if (timeSpan.Value.TotalMilliseconds < MinimumWorkTimeInMs)
+        if (timeSpan.TotalMilliseconds < MinimumWorkTimeInMs)
         {
             return;
         }
@@ -84,7 +95,7 @@ public class DiscThrottle
         double totalWaitTime = 0;
         if (percent > 0)
         {
-            totalWaitTime = timeSpan.Value.TotalMilliseconds * percent;
+            totalWaitTime = timeSpan.TotalMilliseconds * percent;
         }
         //Throttle by sleeping
         while (true)
@@ -92,7 +103,7 @@ public class DiscThrottle
             double SliceMS = 1000; //We want to be able to cancel after 1 sec.
             double waitTime = (totalWaitTime > SliceMS) ? SliceMS : totalWaitTime;
 
-            System.Threading.Thread.Sleep(Convert.ToInt32(waitTime));
+            _sleep(Convert.ToInt32(waitTime));
             totalWaitTime -= waitTime;
             if (totalWaitTime <= 1)
             {
@@ -107,7 +118,7 @@ public class DiscThrottle
         }
 
         //Restart Time
-        StartTime = DateTime.Now;
+        _startTimestamp = _timeProvider.GetTimestamp();
 
     }
 
