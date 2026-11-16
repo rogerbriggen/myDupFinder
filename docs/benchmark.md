@@ -63,7 +63,7 @@ The same progress line (every 10 seconds) and summary line are written by the sc
 A second benchmark, `Rescan_GeneratedTree_ReportsResumeTimings`, measures the resume filter (step 3 of the plan). It uses the same `MYDUPFINDER_BENCHMARK=1` gate and the same `MYDUPFINDER_BENCHMARK_FILES` setting. Run only this one with `--filter "FullyQualifiedName~Rescan_Generated"`.
 
 1. Generates a tree of small files (90 % between 64 B and 4 KB, 10 % up to 64 KB; the files are not hashed in the second run, so their size does not matter) and scans it into a new temporary database (`First scan:` line).
-2. Scans the same tree again with the same job. Every file is already in the database, so the resume filter (`IsAlreadyInDB`, one query per file) skips all of them.
+2. Scans the same tree again with the same job. Every file is already in the database, so the resume filter (`LookupForResume`, one query per file) skips all of them.
 3. Writes the `Scan:` line of the second run. The benchmark fails unless the second run handled all files, hashed 0 bytes, and the database still has the same number of rows and no error rows.
 
 Use at least 20000 files (`MYDUPFINDER_BENCHMARK_FILES=20000`); with fewer files the lookups are too fast to see a difference. The line to look at is the second one, mainly `database=` in the stage times:

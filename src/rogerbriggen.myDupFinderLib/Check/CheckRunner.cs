@@ -51,6 +51,20 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     public int OkCount { get; private set; }
     public int ErrorCount { get; private set; }
 
+    /// <summary>
+    /// Rows reported as MissingOnDisk although the file of their path exists: a path that has more than one row (a state that older versions of the scan produced)
+    /// has one primary row (see <see cref="PrimaryRowChooser"/>) that is compared with the file, every other row of the path is surplus. Included in <see cref="MissingOnDiskCount"/>.
+    /// The category is the same as for a row whose file is gone on purpose: applyCheck removes exactly the row with the id of the report row.
+    /// </summary>
+    public int SurplusRowsReportedMissingCount { get; private set; }
+
+    /// <summary>
+    /// Paths with several rows whose surplus rows were NOT reported, because the check ran without hashing (SkipHashCheck) and the primary row of the path changed:
+    /// the report row of the primary row has no hash, applyCheck would skip it, and removing the other rows would leave only a stale row. A check with hashing or a refresh cleans these paths up.
+    /// A surplus row is reported only when the primary row matches the file (Ok, or a pure path move that applyCheck applies without a hash) or the report row of the primary row carries a hash.
+    /// </summary>
+    public int PathsWithSurplusRowsNotReportedCount { get; private set; }
+
     public string? ReportFilePath { get; private set; }
 
     /// <summary>
@@ -100,12 +114,25 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             ? DbInserts.GetAllItemsByScanIdentity(scanJob.OriginComputer, scanJob.ScanName)
             : DbInserts.GetAllItemsByBasePath(basePath);
         Throughput.EndStage(ThroughputStage.Database, loadStart);
-        var existingByPath = new Dictionary<string, ScanItemDto>(StringComparer.Ordinal);
-        foreach (var item in existingItems)
+        // The identity rule (the one place in this runner): only the rows of this job's OriginComputer and ScanName are compared and reported. Without IgnoreBasePath the rows
+        // are loaded by base path only, so rows of other computers or other named scans with equal path strings can be among them: they are never compared, reported or counted.
+        // (With IgnoreBasePath the rows are loaded by exactly this identity, so the filter keeps everything.)
+        var ownItems = existingItems.Where(i => PrimaryRowChooser.HasIdentity(i, scanJob.OriginComputer, scanJob.ScanName)).ToList();
+        if (existingItems.Count > 0 && ownItems.Count == 0)
         {
-            existingByPath[item.FilenameAndPath] = item;
+            var identities = existingItems.Select(i => $"{i.OriginComputer}/{i.ScanName}").Distinct(StringComparer.Ordinal).OrderBy(s => s, StringComparer.Ordinal);
+            _logger.LogWarning("Check: the database has {count} rows for base path {basePath}, but none belongs to this job's OriginComputer/ScanName ({origin}/{scan}); the job's OriginComputer/ScanName do not match the rows. The identities that exist under this base path: {identities}. These rows are not compared, so every file is reported as NewOnDisk.", existingItems.Count, basePath, scanJob.OriginComputer, scanJob.ScanName, string.Join(", ", identities));
         }
+        else if (ownItems.Count < existingItems.Count)
+        {
+            _logger.LogInformation("Check: {foreign} database rows for base path {basePath} belong to another OriginComputer/ScanName than this job ({origin}/{scan}) and are ignored", existingItems.Count - ownItems.Count, basePath, scanJob.OriginComputer, scanJob.ScanName);
+        }
+        // All rows of a path are kept (older versions of the scan could leave several rows for one path)
+        var existingByPath = PrimaryRowChooser.GroupByPath(ownItems);
+        // Rows that are claimed: the row that was compared with a file, the surplus rows of that file's path (they are not available for a relative match either)
         var seenIds = new HashSet<Guid>();
+        // The surplus rows among the claimed ones (other rows of a path whose file was found): reported as MissingOnDisk anyway
+        var surplusIds = new HashSet<Guid>();
 
         _logger.LogInformation(
             "Check: Found {count} existing items in database for base path {basePath} (IgnoreBasePath={ignoreBasePath})",
@@ -132,7 +159,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         });
 
         // With IgnoreBasePath rows are also matched by their relative path: index them once instead of walking all rows for every file
-        var relativeIndex = CheckJobDTO.IgnoreBasePath ? new RelativePathIndex(existingByPath.Values, basePath) : null;
+        var relativeIndex = CheckJobDTO.IgnoreBasePath ? new RelativePathIndex(existingByPath.Values.SelectMany(rows => rows), basePath) : null;
 
         using var fileEnumerator = _fileSource.Open(basePath);
         UnreadableDirectories = fileEnumerator.UnreadableDirectories;
@@ -177,10 +204,10 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             }
 
             long hashedBytes = 0;
-            int claimedBefore = seenIds.Count;
+            _rowsOfCurrentFile = null;
             try
             {
-                hashedBytes = ProcessFile(currentEntry, basePath, existingByPath, relativeIndex, seenIds, writer);
+                hashedBytes = ProcessFile(currentEntry, basePath, existingByPath, relativeIndex, seenIds, surplusIds, writer);
             }
             catch (OperationCanceledException) when (CancelToken.IsCancellationRequested)
             {
@@ -197,12 +224,21 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             {
                 _logger.LogError(ex, "Check: Error processing file {file}", currentFile);
                 ErrorCount++;
-                // The file exists in the listing, so its row must not be reported as missing: claim the row that belongs to it
-                // (exact path, or with IgnoreBasePath the first unclaimed row with the same relative path)
-                var claimed = seenIds.Count != claimedBefore ? null : existingByPath.TryGetValue(currentFile, out var exactRow) ? exactRow : relativeIndex?.Find(currentFile, seenIds);
-                if (claimed is not null)
+                // The file exists in the listing, so none of the rows of its path may be reported as missing: claim ALL rows of the path that belongs to it
+                // (the rows ProcessFile already matched, else the rows of the exact path, or with IgnoreBasePath the path of the first unclaimed row with the same relative path)
+                var rowsOfFile = _rowsOfCurrentFile;
+                if (rowsOfFile is null && !existingByPath.TryGetValue(currentFile, out rowsOfFile))
                 {
-                    seenIds.Add(claimed.Id);
+                    var claimed = relativeIndex?.Find(currentFile, seenIds);
+                    rowsOfFile = claimed is null ? null : existingByPath[claimed.FilenameAndPath];
+                }
+                if (rowsOfFile is not null)
+                {
+                    foreach (var row in rowsOfFile)
+                    {
+                        seenIds.Add(row.Id);
+                        surplusIds.Remove(row.Id);
+                    }
                 }
             }
 
@@ -218,7 +254,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         // of unreadable directories is final. Files below them were not enumerated although they may exist.
         // (UnreadableDirectories is the live list of the enumeration, final from here on)
         var unreadableMatcher = new UnreadableDirectoryMatcher(UnreadableDirectories.Select(d => d.Path), basePath);
-        foreach (var kvp in existingByPath)
+        foreach (var dbItem in existingByPath.Values.SelectMany(rows => rows))
         {
             if (CancelToken.IsCancellationRequested)
             {
@@ -229,15 +265,16 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
                 return;
             }
 
-            if (seenIds.Contains(kvp.Value.Id))
+            bool isSurplus = surplusIds.Contains(dbItem.Id);
+            if (seenIds.Contains(dbItem.Id) && !isSurplus)
             {
                 continue;
             }
 
-            var dbItem = kvp.Value;
-            bool protectedByUnreadable = CheckJobDTO.IgnoreBasePath
+            // A surplus row belongs to a path whose file exists, so the protection of unreadable directories does not apply to it
+            bool protectedByUnreadable = !isSurplus && (CheckJobDTO.IgnoreBasePath
                 ? unreadableMatcher.IsProtectedByAnyBasePath(dbItem.FilenameAndPath, dbItem.PathBase)
-                : unreadableMatcher.IsProtected(dbItem.FilenameAndPath);
+                : unreadableMatcher.IsProtected(dbItem.FilenameAndPath));
             if (protectedByUnreadable)
             {
                 UnreadableProtectedCount++;
@@ -256,11 +293,23 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             };
             CheckReportCsv.WriteRow(writer, row);
             MissingOnDiskCount++;
-            _logger.LogTrace("Check: MissingOnDisk {file}", dbItem.FilenameAndPath);
+            if (isSurplus)
+            {
+                SurplusRowsReportedMissingCount++;
+            }
+            _logger.LogTrace("Check: MissingOnDisk {file}{surplus}", dbItem.FilenameAndPath, isSurplus ? " (surplus row of a path that has several rows)" : string.Empty);
         }
 
         writer.Flush();
         RunnerState = IService.EServiceState.finished;
+        if (PathsWithSurplusRowsNotReportedCount > 0)
+        {
+            _logger.LogWarning("Check: the surplus rows of {paths} paths that have several rows were not reported because the check ran without hashing (SkipHashCheck) and the file of the path changed, so the row that is kept cannot be brought up to date by this report. Run a check with hashing or a refresh to clean them up.", PathsWithSurplusRowsNotReportedCount);
+        }
+        if (SurplusRowsReportedMissingCount > 0)
+        {
+            _logger.LogWarning("Check: {surplus} surplus rows were reported as MissingOnDisk. Some paths have more than one row in the database (an old database state). One row per path is compared with the file (the one that matches size and last write time, otherwise the one scanned last), every other row of the path is reported as MissingOnDisk with its own id, so that applyCheck removes exactly that row.", SurplusRowsReportedMissingCount);
+        }
         if (UnreadableDirectories.Count > 0)
         {
             _logger.LogWarning("Check: {count} directories could not be read completely. {kept} database rows below them were NOT reported as missing (their files were not checked at all). Directories: {directories}", UnreadableDirectories.Count, UnreadableProtectedCount, UnreadableDirectoryLog.Join(UnreadableDirectories));
@@ -270,7 +319,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     }
 
     /// <returns>The number of bytes that were hashed for this file (0 when it was not hashed or hashing failed).</returns>
-    private long ProcessFile(FileEntryInfo listedEntry, string basePath, Dictionary<string, ScanItemDto> existingByPath, RelativePathIndex? relativeIndex, HashSet<Guid> seenIds, TextWriter writer)
+    private long ProcessFile(FileEntryInfo listedEntry, string basePath, Dictionary<string, List<ScanItemDto>> existingByPath, RelativePathIndex? relativeIndex, HashSet<Guid> seenIds, HashSet<Guid> surplusIds, TextWriter writer)
     {
         // Authoritative values from the file itself (one call) unless TrustDirectoryMetadata is set; read now, right before the file is processed.
         // A failure is an error of this file (the caller counts and logs it, the row of the file is then not reported as missing).
@@ -290,14 +339,21 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 
         ScanItemDto? matched = null;
         bool pathMoved = false;
-        if (existingByPath.TryGetValue(currentFile, out var exact))
+        if (existingByPath.TryGetValue(currentFile, out var exactRows))
         {
-            matched = exact;
+            // Exact path: the primary row of the path is compared with the file
+            matched = PrimaryRowChooser.Choose(exactRows, fileSize, fileLastModificationUTC);
         }
         else if (CheckJobDTO.IgnoreBasePath)
         {
-            matched = relativeIndex?.Find(currentFile, seenIds);
-            pathMoved = matched is not null;
+            // The first unclaimed row of the relative path only decides WHICH PATH (the group of rows with this exact FilenameAndPath) belongs to the file;
+            // the primary row inside the group is chosen with the metadata of the file, exactly as for an exact path (a row that matches wins, else the latest scan)
+            var firstOfGroup = relativeIndex?.Find(currentFile, seenIds);
+            if (firstOfGroup is not null)
+            {
+                matched = PrimaryRowChooser.Choose(existingByPath[firstOfGroup.FilenameAndPath], fileSize, fileLastModificationUTC);
+                pathMoved = true;
+            }
         }
 
         if (matched is null)
@@ -322,7 +378,19 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             return newHashed?.BytesRead ?? 0;
         }
 
+        // Claim the matched row and every other row of its path; the others are surplus and are reported as MissingOnDisk at the end
+        // (unless this file ends in an error: then nothing of the path is reported, see the handler in Check)
+        var rowsOfPath = existingByPath[matched.FilenameAndPath];
+        _rowsOfCurrentFile = rowsOfPath;
         seenIds.Add(matched.Id);
+        foreach (var other in rowsOfPath)
+        {
+            if (other.Id != matched.Id)
+            {
+                seenIds.Add(other.Id);
+                surplusIds.Add(other.Id);
+            }
+        }
 
         bool sizeOrMtimeChanged = matched.FileSize != fileSize || matched.FileLastModificationUTC != fileLastModificationUTC;
 
@@ -332,6 +400,21 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             {
                 OkCount++;
                 return 0;
+            }
+
+            if (sizeOrMtimeChanged)
+            {
+                // The report row of the primary row has no hash, so applyCheck will skip it (SkippedNoHash) and the row stays stale. Removing the other rows of the path
+                // on the strength of such a report could leave only the stale row (or lose the row with a valid hash), so they are not reported; a check with hashing or a refresh cleans them up.
+                if (rowsOfPath.Count > 1)
+                {
+                    foreach (var other in rowsOfPath)
+                    {
+                        surplusIds.Remove(other.Id);
+                    }
+                    PathsWithSurplusRowsNotReportedCount++;
+                    _logger.LogTrace("Check: surplus rows of {file} are not reported, the check runs without hashing and the row that is kept cannot be brought up to date", currentFile);
+                }
             }
 
             // Treat as Modified-like; hash is unknown so leave HashDisk null. applyCheck will then
@@ -368,6 +451,11 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         if (hashed is null)
         {
             ErrorCount++;
+            // The file could not be verified: none of the rows of its path is reported
+            foreach (var other in rowsOfPath)
+            {
+                surplusIds.Remove(other.Id);
+            }
             return 0;
         }
         string diskHash = hashed.Value.Hash;
@@ -459,10 +547,13 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         return Path.Combine(folder, fileName);
     }
 
+    // The rows of the path of the file that ProcessFile is working on (null before it matched a row), for the error handler in Check
+    private List<ScanItemDto>? _rowsOfCurrentFile;
+
     private string BuildSummary() =>
         string.Format(CultureInfo.InvariantCulture,
-            "BitRot={0} Modified={1} ModifiedNoHashChange={2} Missing={3} New={4} Ok={5} Errors={6} UnreadableDirectories={7} NotReportedMissingBecauseUnreadable={8}",
-            BitRotSuspectCount, ModifiedCount, ModifiedNoHashChangeCount, MissingOnDiskCount, NewOnDiskCount, OkCount, ErrorCount, UnreadableDirectories.Count, UnreadableProtectedCount);
+            "BitRot={0} Modified={1} ModifiedNoHashChange={2} Missing={3} (of which surplus rows of paths with several rows={4}) New={5} Ok={6} Errors={7} UnreadableDirectories={8} NotReportedMissingBecauseUnreadable={9} PathsWithSurplusRowsNotReportedWithoutHashing={10}",
+            BitRotSuspectCount, ModifiedCount, ModifiedNoHashChangeCount, MissingOnDiskCount, SurplusRowsReportedMissingCount, NewOnDiskCount, OkCount, ErrorCount, UnreadableDirectories.Count, UnreadableProtectedCount, PathsWithSurplusRowsNotReportedCount);
 
     protected override void Dispose(bool disposing)
     {

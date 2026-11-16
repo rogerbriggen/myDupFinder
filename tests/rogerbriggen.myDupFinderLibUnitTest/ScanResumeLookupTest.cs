@@ -168,6 +168,30 @@ public class ScanResumeLookupTest : IDisposable
         Assert.Equal(FileCount, RowCount());
     }
 
+    // ---- changed files: still one lookup per file, and the rows are updated, not added ----
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(4)]
+    public void SecondScanAfterFilesChanged_DoesOneResumeLookupPerFile_AndKeepsOneRowPerFile(int hashWorkers)
+    {
+        string tree = MakeTree("treeA");
+        Assert.Equal(0, Scan(tree, hashWorkers));
+        var files = Directory.GetFiles(tree, "*", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal).ToList();
+        // Three files get another size, three keep their size but get new content and a new modification time
+        for (int i = 0; i < 3; i++)
+        {
+            File.AppendAllText(files[i], "more");
+            File.WriteAllBytes(files[3 + i], new byte[new FileInfo(files[3 + i]).Length]);
+            File.SetLastWriteTimeUtc(files[3 + i], DateTime.UtcNow.AddDays(1 + i));
+        }
+
+        int lookups = Scan(tree, hashWorkers);
+
+        Assert.Equal(FileCount, lookups);
+        Assert.Equal(FileCount, RowCount());
+    }
+
     [Fact]
     public void ScanWithTheSequentialPathFirstAndThePipelineSecond_AddsNothing()
     {

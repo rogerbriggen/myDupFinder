@@ -3,6 +3,8 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <RootNamespace>RogerBriggen.MyDupFinderLibUnitTest</RootNamespace>
+    <!-- A plain "dotnet test" uses the run settings with the session timeout (see .runsettings) -->
+    <RunSettingsFilePath>$(MSBuildProjectDirectory)/.runsettings</RunSettingsFilePath>
   </PropertyGroup>
 
   <ItemGroup>

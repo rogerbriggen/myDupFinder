@@ -2,88 +2,103 @@
 //
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using RogerBriggen.MyDupFinderLib;
 using Xunit;
 
 namespace RogerBriggen.MyDupFinderLibUnitTest;
 
+/// <summary>
+/// The throttle with a fake clock: the "sleep" of the throttle only records the slice and moves the fake clock, so no test waits in real time.
+/// </summary>
 public class DiscThrottleTest
 {
+    private sealed class Rig
+    {
+        public FakeTimeProvider Clock { get; } = new FakeTimeProvider();
+
+        /// <summary>The slices (in ms) that the throttle slept, in order.</summary>
+        public List<int> Slices { get; } = new List<int>();
+
+        public double SleptMs => Slices.Sum();
+
+        public DiscThrottle Create(uint percent, double minimumWorkTimeInMs) =>
+            new DiscThrottle(percent, minimumWorkTimeInMs, Clock, ms =>
+            {
+                Slices.Add(ms);
+                Clock.Advance(TimeSpan.FromMilliseconds(ms));
+            });
+    }
+
     [Fact]
     public void WaitTest()
     {
-        DiscThrottle disc = new DiscThrottle(10, TimeSpan.FromMinutes(2).TotalMilliseconds);
+        // 10 percent, no throttling during the first 2 minutes of work
+        var rig = new Rig();
+        DiscThrottle disc = rig.Create(10, TimeSpan.FromMinutes(2).TotalMilliseconds);
 
-        DateTime start = DateTime.Now;
-        disc.Throttle(null);
+        disc.Throttle(null); // starts the timer
+        Assert.Empty(rig.Slices);
 
-        while (true)
+        // Less than 2 minutes worked: no waiting at any call
+        for (int second = 1; second <= 118; second++)
         {
-            //less than 2 minutes?...
-            var ts = DateTime.Now - start;
-            if (ts < TimeSpan.FromSeconds(118))
-            {
-                DateTime throttle = DateTime.Now;
-                disc.Throttle(null);
-                Assert.InRange((DateTime.Now - throttle).TotalSeconds, 0, 1);
-            }
-            else if ((ts > TimeSpan.FromSeconds(121)) && (ts < TimeSpan.FromSeconds(130)))
-            {
-                DateTime throttle = DateTime.Now;
-                disc.Throttle(null);
-                var res = (DateTime.Now - throttle);
-                Assert.InRange(res.TotalSeconds, 12, 13);
-            }
-            else if ((ts > TimeSpan.FromSeconds(140)) && (ts < TimeSpan.FromSeconds(145)))
-            {
-                DateTime throttle = DateTime.Now;
-                disc.Throttle(null);
-                Assert.InRange((DateTime.Now - throttle).TotalSeconds, 0, 1);
-            }
-            else if (ts > TimeSpan.FromSeconds(150))
-            {
-                break;
-            }
+            rig.Clock.Advance(TimeSpan.FromSeconds(1));
+            disc.Throttle(null);
         }
+        Assert.Empty(rig.Slices);
+
+        // 121 seconds worked: waits 10 percent of the work time = 12.1 s, in slices of at most one second (so that a cancel is seen after a second)
+        rig.Clock.Advance(TimeSpan.FromSeconds(3));
+        disc.Throttle(null);
+        Assert.Equal(12100, rig.SleptMs);
+        Assert.Equal(13, rig.Slices.Count);
+        Assert.All(rig.Slices, s => Assert.InRange(s, 1, 1000));
+
+        // The timer restarted when the wait ended: 5 seconds later nothing is waited
+        rig.Slices.Clear();
+        rig.Clock.Advance(TimeSpan.FromSeconds(5));
+        disc.Throttle(null);
+        Assert.Empty(rig.Slices);
+
+        // After another 2 minutes of work (the wait is 10 percent of the time since the restart, 125 s)
+        rig.Clock.Advance(TimeSpan.FromSeconds(120));
+        disc.Throttle(null);
+        Assert.Equal(12500, rig.SleptMs);
     }
 
     [Fact]
     public void ZeroPercentThrottle_NoWaiting()
     {
-        // With 0% throttle, Throttle() should return immediately even after minimum time is elapsed
-        DiscThrottle disc = new DiscThrottle(0, 0);
-        disc.Throttle(null); // First call - starts the timer
-
-        // Wait a short time to exceed the minimum work time (0ms)
-        Thread.Sleep(10);
-
-        DateTime before = DateTime.Now;
+        // With 0% throttle, Throttle() returns immediately even after the minimum work time is over
+        var rig = new Rig();
+        DiscThrottle disc = rig.Create(0, 0);
         disc.Throttle(null);
-        var elapsed = DateTime.Now - before;
+        rig.Clock.Advance(TimeSpan.FromHours(1));
 
-        // With 0% throttle there should be no waiting
-        Assert.InRange(elapsed.TotalMilliseconds, 0, 500);
+        disc.Throttle(null);
+
+        Assert.Empty(rig.Slices);
     }
 
     [Fact]
     public void ZeroPercentThrottle_ReturnsImmediately_EvenWithManyCallsAndACancelledToken()
     {
-        DiscThrottle disc = new DiscThrottle(0, 0);
+        var rig = new Rig();
+        DiscThrottle disc = rig.Create(0, 0);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
-        disc.Throttle(cts.Token); // would start the timer of a real throttle
-        Thread.Sleep(20);
+        disc.Throttle(cts.Token);
+        rig.Clock.Advance(TimeSpan.FromMinutes(10));
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         for (int i = 0; i < 1000; i++)
         {
             disc.Throttle(cts.Token);
         }
-        stopwatch.Stop();
 
-        // 1000 calls that each sleep (even Sleep(1) is about 15 ms on Windows) would take many seconds
-        Assert.InRange(stopwatch.ElapsedMilliseconds, 0, 500);
+        Assert.Empty(rig.Slices);
     }
 
     [Fact]
@@ -99,58 +114,93 @@ public class DiscThrottleTest
     }
 
     [Fact]
-    public void ThrottlePercentCappedAt70_NoException()
+    public void ThrottlePercentCappedAt70()
     {
-        // Passing a value > 70 should be capped to 70 (no exception thrown)
-        DiscThrottle disc = new DiscThrottle(100, 0);
-        disc.Throttle(null); // Start timer
-        Assert.NotNull(disc);
+        // 100 percent is capped to 70: after 100 s of work the wait is 70 s, not 100 s
+        var rig = new Rig();
+        DiscThrottle disc = rig.Create(100, 0);
+        disc.Throttle(null);
+        rig.Clock.Advance(TimeSpan.FromSeconds(100));
+
+        disc.Throttle(null);
+
+        Assert.Equal(70000, rig.SleptMs);
     }
 
     [Fact]
-    public void CancellationToken_CancelsThrottle()
+    public void CancellationToken_CancelsThrottle_AfterTheCurrentSlice()
     {
-        // With a high throttle percentage and short minimum time,
-        // a cancelled token should cut the wait short
-        DiscThrottle disc = new DiscThrottle(70, 0);
-        disc.Throttle(null); // First call - starts the timer
-
-        // Wait enough to exceed minimum time
-        Thread.Sleep(100);
-
+        // A cancelled token ends the wait after one slice of one second, not after the whole wait of 70 s
+        var rig = new Rig();
+        DiscThrottle disc = rig.Create(70, 0);
+        disc.Throttle(null);
+        rig.Clock.Advance(TimeSpan.FromSeconds(100));
         using var cts = new CancellationTokenSource();
-        // Cancel immediately
         cts.Cancel();
 
-        DateTime before = DateTime.Now;
         disc.Throttle(cts.Token);
-        var elapsed = DateTime.Now - before;
 
-        // With immediate cancellation, the throttle should stop within 2 seconds
-        Assert.InRange(elapsed.TotalSeconds, 0, 2);
+        Assert.Equal(new[] { 1000 }, rig.Slices);
+    }
+
+    [Fact]
+    public void CancellationDuringTheWait_EndsTheWait_AndTheTimerRestarts()
+    {
+        var rig = new Rig();
+        using var cts = new CancellationTokenSource();
+        var slices = rig.Slices;
+        DiscThrottle disc = new DiscThrottle(50, 0, rig.Clock, ms =>
+        {
+            slices.Add(ms);
+            rig.Clock.Advance(TimeSpan.FromMilliseconds(ms));
+            if (slices.Count == 3)
+            {
+                cts.Cancel();
+            }
+        });
+        disc.Throttle(null);
+        rig.Clock.Advance(TimeSpan.FromSeconds(60));
+
+        disc.Throttle(cts.Token);
+
+        // The token was cancelled while the third slice slept; the wait ends after that slice (30 s would have been waited)
+        Assert.Equal(3, slices.Count);
+        // The timer restarted at the end: a short time later the wait is 50 percent of that short time only
+        slices.Clear();
+        rig.Clock.Advance(TimeSpan.FromSeconds(10));
+        disc.Throttle(null);
+        Assert.Equal(5000, rig.SleptMs);
     }
 
     [Fact]
     public void FirstCall_ReturnsImmediately()
     {
-        DiscThrottle disc = new DiscThrottle(50, 1000);
-        DateTime before = DateTime.Now;
-        disc.Throttle(null); // First call should always return immediately
-        var elapsed = DateTime.Now - before;
-        Assert.InRange(elapsed.TotalMilliseconds, 0, 500);
+        var rig = new Rig();
+        DiscThrottle disc = rig.Create(50, 1000);
+        disc.Throttle(null);
+        Assert.Empty(rig.Slices);
     }
 
     [Fact]
     public void BelowMinimumWorkTime_NoThrottling()
     {
-        // With a very high minimum work time, throttle should not wait
+        var rig = new Rig();
+        DiscThrottle disc = rig.Create(50, TimeSpan.FromHours(1).TotalMilliseconds);
+        disc.Throttle(null);
+        rig.Clock.Advance(TimeSpan.FromMinutes(59));
+
+        disc.Throttle(null);
+
+        Assert.Empty(rig.Slices);
+    }
+
+    [Fact]
+    public void TheClockIsTheTimeProvider_NotTheWallClock()
+    {
+        // The wait only depends on the time provider: with the real default constructor nothing happens before the minimum work time
         DiscThrottle disc = new DiscThrottle(50, TimeSpan.FromHours(1).TotalMilliseconds);
-        disc.Throttle(null); // First call - start timer
-
-        DateTime before = DateTime.Now;
-        disc.Throttle(null); // Should not throttle since minimum time hasn't elapsed
-        var elapsed = DateTime.Now - before;
-
-        Assert.InRange(elapsed.TotalMilliseconds, 0, 500);
+        disc.Throttle(null);
+        disc.Throttle(null);
+        Assert.NotNull(disc);
     }
 }

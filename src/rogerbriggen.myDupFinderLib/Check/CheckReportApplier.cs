@@ -188,8 +188,9 @@ public sealed class CheckReportApplier
     /// True when a row without hash only describes a moved file: PathMoved, and the size and modification time on disk (Disk columns) are the ones the
     /// database row has now. The check writes exactly this (category ModifiedNoHashChange, HashDisk empty) with SkipHashCheck when size and time did not
     /// change; when one of them changed it writes category Modified and the Disk columns differ from the row.
-    /// The Disk columns are compared with the live database row, not with the report's DB columns: the MTime_DB column is written from a value that
-    /// was read back from SQLite without a time zone kind, so it is shifted by the local UTC offset and cannot be compared with MTime_Disk.
+    /// The Disk columns are compared with the live database row, not with the report's DB columns: in reports written before the fix of the time columns the MTime_DB
+    /// column was written from a value that was read back from SQLite without a time zone kind, so it is shifted by the local UTC offset and cannot be compared with
+    /// MTime_Disk. Reports written now have the correct value, but older reports can still be applied, so the comparison against the live row stays.
     /// </summary>
     private static bool IsPathMoveOnly(ScanJobDBInserts db, CheckReportRow row)
     {

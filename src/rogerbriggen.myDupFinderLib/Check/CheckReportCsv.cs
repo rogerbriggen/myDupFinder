@@ -46,7 +46,7 @@ internal static class CheckReportCsv
         writer.WriteLine(FormattableString.Invariant($"# ScanName={header.ScanName}"));
         writer.WriteLine(FormattableString.Invariant($"# SkipHashCheck={(header.SkipHashCheck ? "true" : "false")}"));
         writer.WriteLine(FormattableString.Invariant($"# IgnoreBasePath={(header.IgnoreBasePath ? "true" : "false")}"));
-        writer.WriteLine(FormattableString.Invariant($"# GeneratedUTC={header.GeneratedUTC.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)}"));
+        writer.WriteLine(FormattableString.Invariant($"# GeneratedUTC={FormatUtc(header.GeneratedUTC)}"));
         writer.WriteLine(string.Join(",", s_columns));
     }
 
@@ -272,8 +272,23 @@ internal static class CheckReportCsv
         return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 
-    private static string FormatDateTime(DateTime? d) =>
-        d.HasValue ? d.Value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture) : string.Empty;
+    private static string FormatDateTime(DateTime? d) => d.HasValue ? FormatUtc(d.Value) : string.Empty;
+
+    /// <summary>
+    /// Round-trip text of a UTC time. A value of kind Utc is written as it is, a Local one is converted, and an Unspecified one is taken as UTC: that is what
+    /// values read back from SQLite are (the database stores UTC times without a kind), and <see cref="DateTime.ToUniversalTime"/> would treat them as local
+    /// and shift them by the offset of the local time zone.
+    /// </summary>
+    internal static string FormatUtc(DateTime value)
+    {
+        DateTime utc = value.Kind switch
+        {
+            DateTimeKind.Local => value.ToUniversalTime(),
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+            _ => value,
+        };
+        return utc.ToString("o", CultureInfo.InvariantCulture);
+    }
 
     private static DateTime? ParseDateTime(string s)
     {

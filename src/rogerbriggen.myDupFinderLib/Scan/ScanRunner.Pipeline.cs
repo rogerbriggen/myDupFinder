@@ -59,7 +59,10 @@ internal partial class ScanRunner
     /// <summary>Only for tests: number of producer and worker threads that are running right now. Must be 0 when <c>Start</c> has returned.</summary>
     internal int RunningStageCount => Volatile.Read(ref _runningStages);
 
-    private readonly record struct PipelineResult(ScanItemDto Item, ScanHashOutcome Outcome);
+    /// <summary>A file on its way to a hash worker, with what the resume filter (producer) decided for it: null for a new file, otherwise the rows it replaces.</summary>
+    private sealed record PipelineWork(ScanItemDto Item, ResumeLookup? Existing);
+
+    private readonly record struct PipelineResult(ScanItemDto Item, ResumeLookup? Existing, ScanHashOutcome Outcome);
 
     private int _runningStages;
     private int _inFlight;
@@ -92,7 +95,7 @@ internal partial class ScanRunner
         _interrupted = false;
         _failed = false;
 
-        var work = Channel.CreateBounded<ScanItemDto>(new BoundedChannelOptions(workCapacity) { FullMode = BoundedChannelFullMode.Wait, SingleWriter = true, SingleReader = false });
+        var work = Channel.CreateBounded<PipelineWork>(new BoundedChannelOptions(workCapacity) { FullMode = BoundedChannelFullMode.Wait, SingleWriter = true, SingleReader = false });
         var results = Channel.CreateBounded<PipelineResult>(new BoundedChannelOptions(resultCapacity) { FullMode = BoundedChannelFullMode.Wait, SingleWriter = false, SingleReader = true });
         using var stopCts = CancellationTokenSource.CreateLinkedTokenSource(CancelToken);
         using var writerGoneCts = new CancellationTokenSource();
@@ -119,7 +122,7 @@ internal partial class ScanRunner
             }
             if (CancelToken.IsCancellationRequested && _interrupted)
             {
-                _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  {BuildCountsText()}");
                 Throughput.LogSummary("Scanning cancelled");
                 LogUnreadableSummary(complete: false);
                 RunnerState = IService.EServiceState.cancelled;
@@ -164,7 +167,7 @@ internal partial class ScanRunner
     }
 
     /// <summary>The producer: the first half of the sequential loop, then the file goes to the work queue.</summary>
-    private void ProduceFiles(bool bFilter, DiscThrottle? discThrottle, ChannelWriter<ScanItemDto> work, CancellationToken stop)
+    private void ProduceFiles(bool bFilter, DiscThrottle? discThrottle, ChannelWriter<PipelineWork> work, CancellationToken stop)
     {
         Interlocked.Increment(ref _runningStages);
         try
@@ -207,18 +210,13 @@ internal partial class ScanRunner
                         continue;
                     }
 
-                    //Filter
-                    if (bFilter)
+                    //Filter (one lookup per file, here in the producer: the same decision as the sequential scan, which travels with the file to the writer)
+                    ResumeLookup? existing = null;
+                    if (bFilter && ResumeSkips(si, out existing))
                     {
-                        long filterStart = Throughput.StartStage();
-                        bool alreadyInDB = ScanJobDBInserts.IsAlreadyInDB(si);
-                        Throughput.EndStage(ThroughputStage.Database, filterStart);
-                        if (alreadyInDB)
-                        {
-                            Throughput.AddFile();
-                            Throughput.LogProgressIfDue();
-                            continue;
-                        }
+                        Throughput.AddFile();
+                        Throughput.LogProgressIfDue();
+                        continue;
                     }
 
                     //Hand over to the workers (waits while the work queue is full)
@@ -226,7 +224,7 @@ internal partial class ScanRunner
                     RaiseMaxInFlight(inFlight);
                     try
                     {
-                        BlockingWrite(work, si, stop);
+                        BlockingWrite(work, new PipelineWork(si, existing), stop);
                     }
                     catch
                     {
@@ -240,7 +238,7 @@ internal partial class ScanRunner
                 }
                 if (_logger.IsEnabled(LogLevel.Trace))
                 {
-                    _logger.LogTrace($"Scanning... FileEnumeration currentCount={_enumerateFiles.CurrentCount}  errorCount={_enumerateFiles.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                    _logger.LogTrace($"Scanning... FileEnumeration currentCount={_enumerateFiles.CurrentCount}  errorCount={_enumerateFiles.ErrorCount}  {BuildCountsText()}");
                 }
             }
             // The loop ended because of the token
@@ -267,7 +265,7 @@ internal partial class ScanRunner
     }
 
     /// <summary>A hash worker: takes a file from the work queue, hashes it and hands the result to the writer.</summary>
-    private void HashWorker(ChannelReader<ScanItemDto> work, ChannelWriter<PipelineResult> results, CancellationTokenSource stopCts, CancellationToken writerGone)
+    private void HashWorker(ChannelReader<PipelineWork> work, ChannelWriter<PipelineResult> results, CancellationTokenSource stopCts, CancellationToken writerGone)
     {
         CancellationToken stop = stopCts.Token;
         Interlocked.Increment(ref _runningStages);
@@ -281,7 +279,7 @@ internal partial class ScanRunner
                     _interrupted = true;
                     return;
                 }
-                if (!work.TryRead(out ScanItemDto? item))
+                if (!work.TryRead(out PipelineWork? unit))
                 {
                     try
                     {
@@ -299,9 +297,11 @@ internal partial class ScanRunner
                     continue;
                 }
 
+                ScanItemDto item = unit.Item;
                 WorkerItemHook?.Invoke(item);
 
-                ScanHashOutcome outcome = HashItem(item, stop);
+                // A file that is already scanned is not opened (it only travels on so that the writer removes surplus rows of its path)
+                ScanHashOutcome outcome = HashOrSkip(item, unit.Existing, stop);
                 if (outcome.Kind == ScanHashOutcomeKind.Cancelled)
                 {
                     // Cancelled inside the file: nothing is stored, no error item, no error count
@@ -311,7 +311,7 @@ internal partial class ScanRunner
                 }
 
                 // A finished file is handed over even when stop is set: completed results are never thrown away. Waits for room while the result queue is full.
-                BlockingWrite(results, new PipelineResult(item, outcome), writerGone);
+                BlockingWrite(results, new PipelineResult(item, unit.Existing, outcome), writerGone);
             }
         }
         catch (OperationCanceledException) when (writerGone.IsCancellationRequested)
@@ -355,7 +355,7 @@ internal partial class ScanRunner
             }
 
             WriterResultHook?.Invoke(result.Item);
-            RecordOutcome(result.Item, result.Outcome);
+            RecordOutcome(result.Item, result.Existing, result.Outcome);
             Interlocked.Decrement(ref _inFlight);
             Throughput.LogProgressIfDue();
         }
