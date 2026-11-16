@@ -332,6 +332,78 @@ Reading: SHA-512 on one core is the limit with one worker (about 430 MB/s); on t
 - WAL is not suitable for a database file on a network file system. See [SQLite WAL](https://www.sqlite.org/wal.html). This concerns where the database is stored; the scanned files can be on a network drive. Detect or document this case and fall back to a rollback journal.
 - `cache_size` and `temp_store` are measured the same way.
 
+### Result
+
+Implemented as planned, with one measured change of a default (`cache_size` for the read-only find-dups job); `synchronous=NORMAL` is an explicit setting, safe by default, and gains little now that writes are batched.
+
+**The real state** (each fact is a test in `DatabaseStateProbeTest`, SQLite 3.53.3 from Microsoft.Data.Sqlite on EF Core 10):
+
+1. **Journal mode.** A database that EF Core creates with `Database.Migrate()` is in **WAL mode** (`Probe_DatabaseCreatedByEfMigrate_IsInWalMode`). EF switches a database to WAL only when it creates the file itself: an existing file keeps its mode, also a zero-byte file that was opened in `DELETE` mode (`Probe_EmptyPreCreatedFileInDeleteMode_StaysInDeleteModeWhenEfMigratesIt`), and an existing rollback-journal database keeps `delete` after EF opened, migrated and queried it (`Probe_ExistingRollbackJournalDatabase_KeepsItsModeWhenEfOpensAndMigratesIt`). The WAL mode is stored in the database file. Switching WAL back to `DELETE` after `Migrate()` is not reliable: with the pooled connection of the migration still open it failed with `database is locked` (after the 30 s busy timeout) in one run and worked in another (`Probe_WalToDeleteSwitch_RightAfterMigrate_IsNotReliable_OutcomeIsOnlyReported`), so it is not used.
+2. **`synchronous`.** The effective value is `FULL` (2) in rollback mode and in WAL mode, a **per connection** value that is not stored in the file: a second connection to the same WAL file has 2 while the first has `NORMAL`, and a new connection after all were closed has 2 again (`Probe_DefaultSynchronous_InWalAndRollbackMode_AndWhereItIsStored`).
+3. **Connections.** EF Core opens and closes the connection around every command; Microsoft.Data.Sqlite pools the native connections. A pragma set on a pooled connection **stays on that native connection after `Close()`** and is handed to the next `Open()` of the same connection string (a new `SqliteConnection` object got `synchronous=1` back), but a second connection that is open at the same time has the default (`Probe_PragmaSynchronous_OnPooledConnection_SurvivesCloseAndReopen_ButNotOnAnotherConnectionObject`). So a value that was set once is in effect for later commands only by accident of the pool, and a `NORMAL` connection of one job would be reused by a later `Full` job of the same process on the same file. SQLite refuses to change it inside a transaction (`Safety level may not be changed inside a transaction`, `Probe_PragmaSynchronous_CannotBeChangedInsideATransaction`), so it must be set when the connection is opened, before `BeginTransaction`.
+4. **Defaults.** `cache_size` = -2000 (2 MiB), page size 4096, `temp_store` = 0 (compile-time default, a file) (`Probe_DefaultCacheSizeAndTempStore`).
+5. **Companion files.** While a connection to a WAL database is open (also a closed one in the pool) `-wal` and `-shm` exist; when the last connection closes they are removed (`Probe_WalAndShmFiles_ExistWhileAConnectionIsOpen_AndAreRemovedWhenTheLastOneCloses`, `Probe_PooledConnection_KeepsWalAndShmFilesUntilThePoolIsCleared`). A finished `myDupFinder run` left only the `.db` file. After an unclean end (kill, power failure) they stay and SQLite recovers from them on the next open (SQLite documentation; not simulated here).
+
+**What was added.**
+
+- Job setting `DatabaseSynchronous` (`Full` default, `Normal`) on the scan and refresh jobs; check uses the value of its scan job; applyCheck has no job and stays `Full`; find-dups only reads. Old project files without the element load as `Full`. `CheckSanity` rejects undefined values. XML round trip, example project and README as for `HashWorkers`.
+- A `DbConnectionInterceptor` (`ConnectionPragmaInterceptor`) sets `PRAGMA synchronous` **explicitly on every connection EF Core opens, also for `Full`**, right after the open and before any command or transaction. Chosen over one long-lived connection because it keeps the connection lifetime as it was and also covers the pool case of fact 3 (a pooled `NORMAL` connection is reset to `FULL`); the flush transaction and the applyCheck batch transaction open the connection through EF, so they are covered, and tests read the pragma on the connection that flushes, inside the batch transaction and after several flushes with the connection closed and reopened in between. The cost of the extra statement per open is not measurable (resume run of 20000 lookups, 2.4 to 2.5 s with and without it).
+- `GetDatabaseDiagnostics` now opens the connection through EF (it used the raw connection, which bypasses the interceptor), so the "Database state" log line shows the value that is really in use; tests cover scan, refresh and check.
+- `Normal` is applied only if the database is in WAL mode **and** not on a network location; otherwise `Full` is used and a Warning says why. (Not applied on a network location although it is in WAL mode: an extra restriction of this implementation, the WAL mode is unsupported there anyway.)
+- Network location (`DatabaseLocation.IsNetworkLocation`, injectable per `ScanJobDBInserts` constructor for tests): UNC path (also `\\?\UNC\`) or a drive with `DriveInfo.DriveType == Network`; on other platforms the mount with the longest matching mount point. **Not detected:** `subst` drives, a junction or link to a share, a share mounted into a folder, file systems that the platform reports as local (FUSE, virtualization), a drive that cannot be queried. A **new** database on a network location is created as an empty file in `DELETE` mode before EF Core touches it (fact 1: EF leaves an existing file alone), so no table and no row is ever written in WAL mode. An **existing WAL** database on a network location is not converted: Warning with the risk and the one-line command (`sqlite3 "<file>" "PRAGMA journal_mode=DELETE;"`). An existing rollback-journal database on a local disk is left as it is and an Information line says that `Normal` has no effect. A test opens each existing database (rollback and WAL, local and network, `Full` and `Normal`) and checks that its journal mode is unchanged.
+- No automatic conversion of existing databases: converting needs exclusive access (it fails with `database is locked` while any other connection is open), changes a file that other tools may use, and a wrong network detection would convert a database that should stay WAL. A Warning with the command leaves the decision to the user.
+- The benchmark hook `MeasurementPragmas` (internal, empty by default, only the benchmark classes set it and reset it in `Dispose`) and `MYDUPFINDER_BENCHMARK_SQLITE` (see [benchmark.md](benchmark.md)).
+
+**Measurements** (Release, Windows 11, 20 logical processors, NVMe SSD; `MYDUPFINDER_BENCHMARK_SQLITE` = `normal`, `cache=64` (64 MiB), `temp=memory`, and all three; two runs each, seconds, run 1 / run 2; refresh was not measured, there is no refresh benchmark). The machine drifts by up to about 25 % over minutes (the default scan of the mixed tree took 3.9 / 4.0 s in the first series and 3.3 / 3.2 / 3.1 s later), so configurations that are not in the same series are not comparable; series 2 repeated them interleaved.
+
+Scan, 20000 files (`Scan_ManyTinyFiles`: 64 to 512 B, database bound; `Rescan_GeneratedTree`: first scan of 101 MB with mixed sizes, then the resume run that hashes nothing):
+
+| Settings | Many tiny files | First scan, mixed tree | Rescan (resume) |
+| --- | --- | --- | --- |
+| default, series 1 | 2.8 / 2.8 | 3.9 / 4.0 | 2.5 / 2.4 |
+| default, series 2 (3 runs) | 2.1 / 2.1 / 2.1 | 3.3 / 3.2 / 3.1 | 2.1 / 2.0 / 2.1 |
+| `synchronous=NORMAL`, series 1 | 2.7 / 2.8 | 3.7 / 4.0 | 2.2 / 2.5 |
+| `synchronous=NORMAL`, series 2 | 2.0 | 3.1 | 2.0 |
+| `cache_size` 64 MiB, series 1 | 2.6 / 2.6 | 3.9 / 3.9 | 2.4 / 2.5 |
+| `cache_size` 64 MiB, series 2 | 2.0 | 3.0 | 2.0 |
+| `temp_store=MEMORY`, series 1 | 1.8 / 2.2 | 3.9 / 2.9 | 2.6 / 2.2 |
+| `temp_store=MEMORY`, series 2 | 2.0 / 1.9 | 2.9 / 3.0 | 2.2 / 2.2 |
+| all three, series 1 | 1.9 / 1.9 | 2.9 / 2.8 | 2.5 / 2.2 |
+| all three, series 2 | 1.8 | 2.8 | 2.3 |
+
+In the interleaved series every setting is within about 10 % of the default (the largest difference, `temp_store=MEMORY` on the first scan, 2.95 against 3.25 s, is smaller than the drift between the series). **`synchronous=NORMAL` gains nothing measurable for the scan** (batches of 500 rows are few commits).
+
+applyCheck, 30000 report rows (`Apply_MixedReport_ReportsTimings`; "before" = one commit per row, the way applyCheck worked before step 2, "after" = the real applier with transactions of 500 rows):
+
+| Settings | Before: commit per row (s) | After: batched applier (s) |
+| --- | --- | --- |
+| default | 36.2 / 37.9 | 2.0 / 2.0 |
+| `synchronous=NORMAL` (plain pragma, measurement only) | 5.6 / 5.7 | 1.9 / 2.0 |
+| `cache_size` 64 MiB | 36.1 / 37.3 | 2.1 / 2.0 |
+| `temp_store=MEMORY` | 37.3 / 37.7 | 2.1 / 2.1 |
+| all three | 5.9 / 6.0 | 1.9 / 2.0 |
+
+`NORMAL` is 6 times faster for one commit per row, which is exactly what step 2 removed; for the batched applier the gain is about 0 to 5 %, within the noise. applyCheck stays `Full`.
+
+Find-dups, 100000 rows per database (`FindDups_AllModes_ReportTimings`, query part / total with report, seconds; the settings only matter for the read side, `synchronous` changes nothing there and the `normal` rows equal the default):
+
+| Mode | default (4 runs) | `cache_size` 64 MiB (2 runs, same with all three) | `cache_size` 16 MiB (1 run) | `temp_store=MEMORY` (2 runs) |
+| --- | --- | --- | --- | --- |
+| same database, only dups | 0.35 / 0.32 | 0.31 / 0.23 and 0.31 / 0.24 | 0.33 / 0.32 | 0.34 / 0.33 |
+| same database, whole lot | 0.96 to 1.04 / 0.91 | 0.62 / 0.82 and 0.61 / 0.83 | 0.92 / 0.86 | 0.97 / 0.93 |
+| two databases, only dups | 0.61 to 0.63 / 0.70 to 0.73 | 0.39 / 0.49 and 0.39 / 0.50 | 0.55 / 0.67 | 0.62 / 0.73 |
+| two databases, whole lot | 1.62 to 1.63 / 2.00 to 2.03 | 1.08 / 1.40 and 1.14 / 1.41 | 1.50 / 1.91 | 1.62 / 2.02 |
+
+Run-to-run noise of the default for this benchmark: about 3 %.
+
+**Decision.**
+
+- `synchronous`: explicit setting, `Full` default, `Normal` only where it is safe. Measured gain after batching: none for scan, none for the batched applier; real only for one commit per row, which no longer exists. The setting is therefore of little use today and kept for slow disks and large batches of small commits; the safe default stays.
+- `cache_size`: a clear, repeatable gain (30 to 38 % of the query part, about 30 % of the total, outside the 3 % noise, two runs agree) only for the **read-only find-dups job**, none for the writing jobs. So **the find-dups contexts (`DubFinderDB`, base and second database of the whole-lot mode) now set `PRAGMA cache_size=-65536` (64 MiB) on every connection**; scan, refresh, check and applyCheck keep SQLite's default. It is per connection, not stored in the file, and only a limit (SQLite fills it as pages are read). The second database is still opened read-only in effect: a pragma on the connection changes no file (the "second database untouched" tests pass). A pooled connection keeps the value after `Close()`, so a later writing job of the same process on the same file can run with the bigger cache too (memory only; no effect on durability). 16 MiB gave only about 5 to 10 % at this database size, 64 MiB is the measured value, a database much bigger than 100000 rows was not measured. No job setting.
+- `temp_store=MEMORY`: no repeatable gain anywhere (within noise in all benchmarks), **left at SQLite's default**; not set.
+
+**Not done / out of scope.** Converting existing databases between journal modes; `PRAGMA mmap_size`, page size, `auto_vacuum`; `ANALYZE`; opening connections with `file:` URIs / read-only attach; schema changes; any change in scan, refresh or check logic. Refresh was not benchmarked (no benchmark exists). The behaviour after a kill is from the SQLite documentation, not simulated. Network detection is a best effort (see above).
+
 ## Optional later steps
 
 These change the schema or the meaning of the database and are only worth doing if the steps above are not enough.

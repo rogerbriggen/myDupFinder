@@ -38,10 +38,13 @@ public class ApplyCheckBenchmark : IDisposable
         _output = output;
         _tempDir = Path.Combine(Path.GetTempPath(), "ApplyCheckBenchmark_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
+        // applyCheck has no job setting and always uses Full: "normal" is applied as a plain pragma here, for the measurement only
+        BenchmarkSqliteSettings.Apply(includeSynchronous: true);
     }
 
     public void Dispose()
     {
+        BenchmarkSqliteSettings.Reset();
         SqliteConnection.ClearAllPools();
         if (Directory.Exists(_tempDir))
         {
@@ -56,6 +59,7 @@ public class ApplyCheckBenchmark : IDisposable
     public void Apply_MixedReport_ReportsTimings()
     {
         int rowCount = GetRowCount();
+        _output.WriteLine("Mode: " + BenchmarkSqliteSettings.Description);
         string seedDb = Path.Combine(_tempDir, "seed.db");
 
         // Share of the report: 40 % Modified, 10 % BitRotSuspect, 10 % ModifiedNoHashChange, 10 % MissingOnDisk, 30 % NewOnDisk. The first four need a row in the database.

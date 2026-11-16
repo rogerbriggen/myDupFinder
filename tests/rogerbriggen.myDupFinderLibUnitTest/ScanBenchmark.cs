@@ -50,10 +50,13 @@ public class ScanBenchmark : IDisposable
     {
         _output = output;
         _tempDir = Path.Combine(Path.GetTempPath(), "ScanBenchmark_" + Guid.NewGuid().ToString("N"));
+        // cache_size / temp_store from MYDUPFINDER_BENCHMARK_SQLITE (synchronous goes through the job setting)
+        BenchmarkSqliteSettings.Apply();
     }
 
     public void Dispose()
     {
+        BenchmarkSqliteSettings.Reset();
         SqliteConnection.ClearAllPools();
         if (Directory.Exists(_tempDir))
         {
@@ -74,7 +77,7 @@ public class ScanBenchmark : IDisposable
 
     private void WriteMode() => _output.WriteLine(
         "Mode: " + (TrustDirectoryMetadata ? "TrustDirectoryMetadata=true (directory listing values)" : "default (metadata read from each file)")
-        + $", HashWorkers={HashWorkers}, {Environment.ProcessorCount} logical processors");
+        + $", HashWorkers={HashWorkers}, {Environment.ProcessorCount} logical processors, {BenchmarkSqliteSettings.Description}");
 
     private static int GetFileCount() =>
         int.TryParse(Environment.GetEnvironmentVariable(FileCountVariable), NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) && parsed > 0 ? parsed : DefaultFileCount;
@@ -107,6 +110,7 @@ public class ScanBenchmark : IDisposable
             ReportPath = _tempDir,
             TrustDirectoryMetadata = TrustDirectoryMetadata,
             HashWorkers = HashWorkers,
+            DatabaseSynchronous = BenchmarkSqliteSettings.Synchronous,
         };
         var runner = ScanTestRunner.Run(job);
 
@@ -154,6 +158,7 @@ public class ScanBenchmark : IDisposable
             ReportPath = _tempDir,
             TrustDirectoryMetadata = TrustDirectoryMetadata,
             HashWorkers = HashWorkers,
+            DatabaseSynchronous = BenchmarkSqliteSettings.Synchronous,
         };
         var runner = ScanTestRunner.Run(job);
 
@@ -202,6 +207,7 @@ public class ScanBenchmark : IDisposable
             ReportPath = _tempDir,
             TrustDirectoryMetadata = TrustDirectoryMetadata,
             HashWorkers = HashWorkers,
+            DatabaseSynchronous = BenchmarkSqliteSettings.Synchronous,
         };
         var firstRun = ScanTestRunner.Run(job);
         _output.WriteLine("First scan:  " + firstRun.Throughput.BuildSummary());
@@ -251,6 +257,7 @@ public class ScanBenchmark : IDisposable
             ReportPath = _tempDir,
             TrustDirectoryMetadata = TrustDirectoryMetadata,
             HashWorkers = HashWorkers,
+            DatabaseSynchronous = BenchmarkSqliteSettings.Synchronous,
         };
         var scanRunner = ScanTestRunner.Run(scanJob);
         Assert.Equal(IService.EServiceState.finished, scanRunner.RunnerState);
@@ -268,6 +275,7 @@ public class ScanBenchmark : IDisposable
                 DatabaseFile = scanJob.DatabaseFile,
                 ReportPath = _tempDir,
                 TrustDirectoryMetadata = TrustDirectoryMetadata,
+                DatabaseSynchronous = BenchmarkSqliteSettings.Synchronous,
             },
             IgnoreBasePath = true,
             SkipHashCheck = true,

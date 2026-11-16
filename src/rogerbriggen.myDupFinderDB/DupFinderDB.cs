@@ -26,13 +26,17 @@ public class DubFinderDB : IDisposable
     private bool _disposedValue;
 
 
+    /// <summary>The context itself, only for tests that look at the connection settings.</summary>
+    internal DubFinderContext? ContextForTests => _dbContext;
+
     public DubFinderDB(ILogger<DubFinderDB>? logger) => _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<DubFinderDB>();
     public void SetupDB(string databaseFile)
     {
         lock (dbContextLock)
         {
             databaseFile = DatabaseLocation.PrepareDatabaseFile(databaseFile);
-            _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile);
+            // The find-dups job only reads: a bigger page cache (measured, step 8), nothing else is set
+            _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile, DatabaseConnectionSettings.ForReading());
             _dbContext = new DubFinderContext(_dbContextOptions);
             DatabaseMigrator.Migrate(_dbContext, _logger, databaseFile);
             _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
@@ -250,7 +254,7 @@ public class DubFinderDB : IDisposable
         }
         GetExistingDatabaseFile(secondDatabaseFile);
 
-        using var secondDbContext = DubFinderContextFactory.CreateDubFinderContext(secondDatabaseFile);
+        using var secondDbContext = new DubFinderContext(DubFinderContextFactory.GetDbContextOptions(secondDatabaseFile, DatabaseConnectionSettings.ForReading()));
         return secondDbContext.ScanItems?
             .AsNoTracking()
             .OrderBy(s => s.FileSha512Hash)

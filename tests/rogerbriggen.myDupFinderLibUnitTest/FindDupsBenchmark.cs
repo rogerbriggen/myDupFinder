@@ -35,10 +35,13 @@ public class FindDupsBenchmark : IDisposable
         _output = output;
         _tempDir = Path.Combine(Path.GetTempPath(), "FindDupsBenchmark_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
+        // cache_size / temp_store from MYDUPFINDER_BENCHMARK_SQLITE (find-dups only reads, so "normal" changes nothing here)
+        BenchmarkSqliteSettings.Apply();
     }
 
     public void Dispose()
     {
+        BenchmarkSqliteSettings.Reset();
         SqliteConnection.ClearAllPools();
         if (Directory.Exists(_tempDir))
         {
@@ -151,6 +154,7 @@ public class FindDupsBenchmark : IDisposable
     public void FindDups_AllModes_ReportTimings()
     {
         int rowCount = GetRowCount();
+        _output.WriteLine("Mode: " + BenchmarkSqliteSettings.Description);
         var stopwatch = Stopwatch.StartNew();
         var (baseRows, secondRows) = FindDupsTestData.Generate(rowCount);
         string baseDb = Path.Combine(_tempDir, "base.db");

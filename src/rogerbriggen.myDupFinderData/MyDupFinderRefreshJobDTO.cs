@@ -32,6 +32,14 @@ public class MyDupFinderRefreshJobDTO
     /// Only recommended for trees without hard links.
     /// </summary>
     public bool TrustDirectoryMetadata { get; set; }
+
+    /// <summary>
+    /// See <see cref="MyDupFinderScanJobDTO.DatabaseSynchronous"/>. <see cref="DatabaseSynchronous.Full"/> is the default, also used when the element is missing in the project file.
+    /// <see cref="DatabaseSynchronous.Normal"/> is only applied to a database in WAL mode (not on a network location) and can lose the most recent committed batches after a power failure
+    /// or an operating system crash; otherwise it is ignored with a Warning.
+    /// </summary>
+    public DatabaseSynchronous DatabaseSynchronous { get; set; } = DatabaseSynchronous.Full;
+
     public static void CheckSanity(MyDupFinderRefreshJobDTO dto)
     {
         if (string.IsNullOrWhiteSpace(dto.JobName))
@@ -59,6 +67,12 @@ public class MyDupFinderRefreshJobDTO
         if (dto.ThrottlePercent > MyDupFinderScanJobDTO.MaxThrottlePercent)
         {
             throw new ParameterException($"Param ThrottlePercent must be between 0 and {MyDupFinderScanJobDTO.MaxThrottlePercent}! {dto.ThrottlePercent}");
+        }
+
+        //Rule: DatabaseSynchronous must be a defined value
+        if (!System.Enum.IsDefined(dto.DatabaseSynchronous))
+        {
+            throw new ParameterException($"Param DatabaseSynchronous must be Full or Normal! {dto.DatabaseSynchronous}");
         }
 
         //Rule: BasePath must exist

@@ -45,6 +45,17 @@ public class MyDupFinderScanJobDTO
     public int HashWorkers { get; set; } = 1;
 
     /// <summary>
+    /// <see cref="DatabaseSynchronous.Full"/> (the default, also used when the element is missing in the project file): every commit is synced to the disk, a committed batch survives
+    /// a power failure and an operating system crash.
+    /// <see cref="DatabaseSynchronous.Normal"/>: faster commits. Only applied when the database is in WAL mode and not on a network location; there the database stays consistent after a power failure
+    /// or an operating system crash, but the most recent committed batches (not only the last one) can be lost, and are scanned again on the next run because of the resume logic.
+    /// If the database is not in WAL mode (or is on a network location) the setting is ignored with a Warning and Full is used: in rollback-journal mode Normal adds a small risk of corruption
+    /// on power failure on some file systems. A crash of the application alone loses nothing in either setting. Used by scan, refresh and check (check uses the value of its scan job);
+    /// applyCheck always uses Full and find-dups only reads.
+    /// </summary>
+    public DatabaseSynchronous DatabaseSynchronous { get; set; } = DatabaseSynchronous.Full;
+
+    /// <summary>
     /// Highest accepted value for <see cref="HashWorkers"/>.
     /// </summary>
     public const int MaxHashWorkers = 64;
@@ -88,6 +99,12 @@ public class MyDupFinderScanJobDTO
         if (dto.HashWorkers < 1 || dto.HashWorkers > MaxHashWorkers)
         {
             throw new ParameterException($"Param HashWorkers must be between 1 and {MaxHashWorkers}! {dto.HashWorkers}");
+        }
+
+        //Rule: DatabaseSynchronous must be a defined value
+        if (!System.Enum.IsDefined(dto.DatabaseSynchronous))
+        {
+            throw new ParameterException($"Param DatabaseSynchronous must be Full or Normal! {dto.DatabaseSynchronous}");
         }
 
         //Rule: BasePath must exist
