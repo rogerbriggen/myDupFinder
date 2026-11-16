@@ -262,15 +262,16 @@ public class DatabaseIndexMigrationTest : IDisposable
     }
 
     [Fact]
-    public void QueryPlan_IsAlreadyInDB_UsesFilenameAndPathIndex()
+    public void QueryPlan_ResumeLookup_UsesFilenameAndPathIndex_AndNotTheFileSizeIndex()
     {
         string path = CreateMigratedDatabase();
         var si = CreateItem("a.txt");
 
-        string plan = QueryPlanHelper.Explain(path, c => ScanJobDBInserts.CountAlreadyInDB(c, si));
+        string plan = QueryPlanHelper.Explain(path, c => ScanJobDBInserts.GetResumeCandidates(c, si.FilenameAndPath, si.ScanExecutionComputer));
 
         _output.WriteLine(plan);
         AssertUsesFilenameAndPathIndex(plan);
+        Assert.DoesNotContain("IX_ScanItems_FileSize", plan, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -296,21 +297,28 @@ public class DatabaseIndexMigrationTest : IDisposable
     }
 
     [Fact]
-    public void QueryPlan_IsAlreadyInDB_Count_ReturnsMatchesAndStillWorksWithTheIndex()
+    public void ResumeLookup_ReturnsTheRowsOfThePathOfThisComputer_WithTheColumnsTheDecisionNeeds()
     {
         string path = CreateMigratedDatabase();
         var item = CreateItem("a.txt");
+        var sameSizeOtherComputer = CreateItem("a.txt");
+        sameSizeOtherComputer.ScanExecutionComputer = "OtherPC";
+        var otherPath = CreateItem("b.txt");
         using (var context = DubFinderContextFactory.CreateDubFinderContext(path))
         {
-            context.Add(item);
+            context.AddRange(item, sameSizeOtherComputer, otherPath);
             context.SaveChanges();
         }
-        var sameFile = CreateItem("a.txt");
-        var otherSize = CreateItem("a.txt", size: 999);
 
         using var context2 = DubFinderContextFactory.CreateDubFinderContext(path);
-        Assert.Equal(1, ScanJobDBInserts.CountAlreadyInDB(context2, sameFile));
-        Assert.Equal(0, ScanJobDBInserts.CountAlreadyInDB(context2, otherSize));
+        var rows = ScanJobDBInserts.GetResumeCandidates(context2, item.FilenameAndPath, "TestPC");
+        var row = Assert.Single(rows);
+        Assert.Equal(item.Id, row.Id);
+        Assert.Equal(100, row.FileSize);
+        Assert.Equal(item.FileLastModificationUTC.Ticks, row.FileLastModificationUTC.Ticks);
+        Assert.Equal(item.LastScanDateUTC.Ticks, row.LastScanDateUTC.Ticks);
+        Assert.Empty(ScanJobDBInserts.GetResumeCandidates(context2, item.FilenameAndPath, "NoSuchPC"));
+        Assert.Equal(0, context2.ChangeTracker.Entries().Count());
     }
 
     /// <summary>
@@ -332,7 +340,7 @@ public class DatabaseIndexMigrationTest : IDisposable
         var plans = new List<(string Name, string Plan)>
         {
             ("IsEmptyScanItemTable", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.IsEmptyScanItemTable(c))),
-            ("IsAlreadyInDB", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.CountAlreadyInDB(c, si))),
+            ("LookupForResume", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.GetResumeCandidates(c, si.FilenameAndPath, si.ScanExecutionComputer))),
             ("IsBasePathAlreadyInDB", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.IsBasePathAlreadyInDB(c, BasePath))),
             ("GetAllItemsByBasePath", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.GetAllItemsByBasePath(c, BasePath))),
             ("GetAllItemsByScanIdentity", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.GetAllItemsByScanIdentity(c, "TestPC", "TestScan"))),

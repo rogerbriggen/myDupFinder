@@ -15,6 +15,29 @@ using RogerBriggen.MyDupFinderData;
 
 namespace RogerBriggen.MyDupFinderDB;
 
+/// <summary>What the resume filter found for a file that the scan is about to process.</summary>
+public enum ResumeLookupKind
+{
+    /// <summary>No row for the path (of this ScanExecutionComputer): the file is new, insert it.</summary>
+    NotInDatabase,
+
+    /// <summary>A row has the size and the last write time of the file: it is already scanned, nothing to hash.</summary>
+    AlreadyScanned,
+
+    /// <summary>There are rows for the path, but none has the size and the last write time of the file: it changed, hash it and update the primary row.</summary>
+    Changed,
+}
+
+/// <summary>The result of <see cref="ScanJobDBInserts.LookupForResume"/>.</summary>
+/// <param name="Kind">What was found.</param>
+/// <param name="PrimaryId">The row of the path that stays (the one that matches; for a changed file the one to update). Empty for <see cref="ResumeLookupKind.NotInDatabase"/>.</param>
+/// <param name="SurplusIds">All other rows of the path, they are removed.</param>
+public sealed record ResumeLookup(ResumeLookupKind Kind, Guid PrimaryId, IReadOnlyList<Guid> SurplusIds)
+{
+    /// <summary>The result for a path without rows.</summary>
+    public static ResumeLookup NotInDatabase { get; } = new ResumeLookup(ResumeLookupKind.NotInDatabase, Guid.Empty, Array.Empty<Guid>());
+}
+
 public class ScanJobDBInserts : IDisposable
 {
 
@@ -477,14 +500,65 @@ public class ScanJobDBInserts : IDisposable
 
     internal static bool IsEmptyScanItemTable(DubFinderContext context) => !context.Set<ScanItemDto>().Any();
 
-    internal static int CountAlreadyInDB(DubFinderContext context, ScanItemDto si)
+    /// <summary>
+    /// The rows of the resume lookup: all rows with this FilenameAndPath that were written by this ScanExecutionComputer (the resume identity of the scan:
+    /// the path and the computer that scanned it, nothing else). Not tracked, and only the columns the decision needs: the objects returned are partial
+    /// (Id, OriginComputer, ScanName, FileSize, FileLastModificationUTC and LastScanDateUTC are set, everything else is empty; the identity is needed because only rows of the job's
+    /// OriginComputer and ScanName may be updated or removed), so they must only be used for <see cref="DecideResume"/>
+    /// and <see cref="PrimaryRowChooser"/>. The query has no condition on FileSize on purpose: SQLite uses the FilenameAndPath index (one equality search per file,
+    /// see the query plan test), and a condition on FileSize would invite it to use the much less selective FileSize index.
+    /// </summary>
+    internal static List<ScanItemDto> GetResumeCandidates(DubFinderContext context, string filenameAndPath, string scanExecutionComputer) =>
+        context.Set<ScanItemDto>().AsNoTracking()
+            .Where(s => s.FilenameAndPath == filenameAndPath && s.ScanExecutionComputer == scanExecutionComputer)
+            .Select(s => new ScanItemDto { Id = s.Id, OriginComputer = s.OriginComputer, ScanName = s.ScanName, FileSize = s.FileSize, FileLastModificationUTC = s.FileLastModificationUTC, LastScanDateUTC = s.LastScanDateUTC })
+            .ToList();
+
+    /// <summary>
+    /// The decision of the resume filter for one file, from the candidate rows of its path (any identity, see <see cref="GetResumeCandidates"/>).
+    /// <list type="bullet">
+    /// <item>A candidate with the size and the last write time of the file, whatever its identity, means the file is already scanned (the rule of the resume identity: path and
+    /// ScanExecutionComputer). Only the rows of the job's identity (<paramref name="originComputer"/>, <paramref name="scanName"/>) are ever updated or removed: if one of them matches, the other
+    /// rows of that identity are surplus; if only a row of another identity matches, nothing else is done.</item>
+    /// <item>No candidate matches and there are rows of the job's identity: the file changed, the primary row of those rows is updated and their other rows are surplus.</item>
+    /// <item>No candidate matches and there is no row of the job's identity (none at all, or only rows of other scans): insert a new row, the rows of the other identities stay as they are.</item>
+    /// </list>
+    /// </summary>
+    internal static ResumeLookup DecideResume(IReadOnlyList<ScanItemDto> rows, long fileSize, DateTime fileLastWriteTimeUtc, string originComputer, string scanName)
     {
-        string filenameAndPath = si.FilenameAndPath;
-        long fileSize = si.FileSize;
-        string scanExecutionComputer = si.ScanExecutionComputer;
-        // "FileSize + 0" has the same value as FileSize, but keeps SQLite from using the (much less selective) FileSize index.
-        // Without table statistics SQLite chose that index for this query instead of the FilenameAndPath index (see the query plan test).
-        return context.Set<ScanItemDto>().Count(s => (s.FilenameAndPath == filenameAndPath) && (s.FileSize + 0 == fileSize) && (s.ScanExecutionComputer == scanExecutionComputer));
+        ArgumentNullException.ThrowIfNull(rows);
+        var own = new List<ScanItemDto>(rows.Count);
+        ScanItemDto? foreignMatch = null;
+        foreach (ScanItemDto row in rows)
+        {
+            if (PrimaryRowChooser.HasIdentity(row, originComputer, scanName))
+            {
+                own.Add(row);
+            }
+            else if (foreignMatch is null && PrimaryRowChooser.Matches(row, fileSize, fileLastWriteTimeUtc))
+            {
+                foreignMatch = row;
+            }
+        }
+        if (own.Count == 0)
+        {
+            return foreignMatch is null ? ResumeLookup.NotInDatabase : new ResumeLookup(ResumeLookupKind.AlreadyScanned, foreignMatch.Id, Array.Empty<Guid>());
+        }
+        ScanItemDto primary = PrimaryRowChooser.Choose(own, fileSize, fileLastWriteTimeUtc);
+        if (!PrimaryRowChooser.Matches(primary, fileSize, fileLastWriteTimeUtc) && foreignMatch is not null)
+        {
+            // The file is already scanned by a row of another scan; the stale rows of this job are not touched either
+            return new ResumeLookup(ResumeLookupKind.AlreadyScanned, foreignMatch.Id, Array.Empty<Guid>());
+        }
+        var surplus = new List<Guid>(own.Count - 1);
+        foreach (ScanItemDto row in own)
+        {
+            if (row.Id != primary.Id)
+            {
+                surplus.Add(row.Id);
+            }
+        }
+        return new ResumeLookup(PrimaryRowChooser.Matches(primary, fileSize, fileLastWriteTimeUtc) ? ResumeLookupKind.AlreadyScanned : ResumeLookupKind.Changed, primary.Id, surplus);
     }
 
     internal static bool IsBasePathAlreadyInDB(DubFinderContext context, string basePath) => context.Set<ScanItemDto>().Any(s => s.PathBase == basePath);
@@ -504,36 +578,29 @@ public class ScanJobDBInserts : IDisposable
     internal static ScanItemDto? GetItemById(DubFinderContext context, Guid id) => context.Set<ScanItemDto>().AsNoTracking().FirstOrDefault(s => s.Id == id);
 
     /// <summary>
-    /// Number of resume lookups (<see cref="IsAlreadyInDB"/>) done so far. Only for tests: a scan into an empty database must not do any.
+    /// Number of resume lookups (<see cref="LookupForResume"/>) done so far. Only for tests: a scan into an empty database must not do any,
+    /// a resumed scan does exactly one per file.
     /// </summary>
     internal int ResumeLookupCount { get; private set; }
 
-    public bool IsAlreadyInDB(ScanItemDto si)
+    /// <summary>
+    /// The resume filter of the scan: one indexed query for the rows of the path of the item (written by the same ScanExecutionComputer), then the decision with
+    /// the size and the last write time that the item carries now (see <see cref="DecideResume"/>). Does not write anything: the caller stores the result of
+    /// hashing with <see cref="UpdateItem"/> and <see cref="RemoveItem"/> (changed file) or <see cref="Enqueue(ScanItemDto)"/> (new file).
+    /// </summary>
+    public ResumeLookup LookupForResume(ScanItemDto si)
     {
+        ArgumentNullException.ThrowIfNull(si);
         if (_dbContext is null)
         {
-            throw new InvalidOperationException("IsAlreadyInDB called without SetupDB!");
+            throw new InvalidOperationException("LookupForResume called without SetupDB!");
         }
         lock (dbContextLock)
         {
             ResumeLookupCount++;
-            int itemCount = CountAlreadyInDB(_dbContext, si);
-            if (itemCount == 0)
-            {
-                return false;
-            }
-            else if (itemCount == 1)
-            {
-                return true;
-            }
-            else
-            {
-                //Strange
-                _logger.LogWarning($"IsAlreadyInDB had a strange itemCount of {itemCount}...");
-                return true;
-            }
+            var rows = GetResumeCandidates(_dbContext, si.FilenameAndPath, si.ScanExecutionComputer);
+            return DecideResume(rows, si.FileSize, si.FileLastModificationUTC, si.OriginComputer, si.ScanName);
         }
-
     }
 
     public bool IsBasePathAlreadyInDB(string basePath)

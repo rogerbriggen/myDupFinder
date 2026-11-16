@@ -71,6 +71,8 @@ Revision 2: reworked after review feedback from Sol. The main changes are a miss
 
 Implemented as step 3.1 and 3.4: the migration `AddFilenameAndPathIndex` and `Any()` instead of `Count()`. Step 3.3 is left as it is (the resume identity is unchanged, see [DatabaseIndexMigrationTest.cs](../tests/rogerbriggen.myDupFinderLibUnitTest/DatabaseIndexMigrationTest.cs) for the plans below).
 
+**Update 2026-11-16:** the resume identity now includes the modification time: a file counts as already scanned only when a row for its path (and `ScanExecutionComputer`) has the same size and last write time, and a changed file updates its row in place instead of being skipped or inserted a second time. The lookup returns the rows of the path (`FilenameAndPath` index, no size condition, so `FileSize + 0` is gone) instead of a count. Everything that updates or removes rows (resume update, surplus removal in scan, refresh and check) is confined to rows with the job's `OriginComputer` and `ScanName`; the resume lookup returns these two columns as well (still one query on the `FilenameAndPath` index).
+
 **Query plans** (`EXPLAIN QUERY PLAN` of the SQL that EF generates, empty table, after the migration):
 
 - `IsEmptyScanItemTable`: `SCAN s USING COVERING INDEX IX_ScanItems_FileSize`. Stops at the first row, so it is cheap.

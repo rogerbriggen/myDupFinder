@@ -103,7 +103,7 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
                 if (CancelToken.IsCancellationRequested)
                 {
                     WriteChanges();
-                    _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                    _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  {BuildCountsText()}");
                     Throughput.LogSummary("Scanning cancelled");
                     LogUnreadableSummary(complete: false);
                     RunnerState = IService.EServiceState.cancelled;
@@ -144,29 +144,24 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
                         continue;
                     }
 
-                    //Filter
-                    if (bFilter)
+                    //Filter (one lookup per file): a file that is already scanned is skipped, a changed one carries the rows it will replace
+                    ResumeLookup? existing = null;
+                    if (bFilter && ResumeSkips(si, out existing))
                     {
-                        long filterStart = Throughput.StartStage();
-                        bool alreadyInDB = ScanJobDBInserts.IsAlreadyInDB(si);
-                        Throughput.EndStage(ThroughputStage.Database, filterStart);
-                        if (alreadyInDB)
-                        {
-                            Throughput.AddFile();
-                            Throughput.LogProgressIfDue();
-                            continue;
-                        }
+                        Throughput.AddFile();
+                        Throughput.LogProgressIfDue();
+                        continue;
                     }
 
                     //Calc hash
-                    CalcHash(si);
+                    CalcHash(si, existing);
                     Throughput.LogProgressIfDue();
 
                     //CancelToken?
                     if (CancelToken.IsCancellationRequested)
                     {
                         WriteChanges();
-                        _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                        _logger.LogInformation($"Scanning was cancelled by user... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  {BuildCountsText()}");
                         Throughput.LogSummary("Scanning cancelled");
                         LogUnreadableSummary(complete: false);
                         RunnerState = IService.EServiceState.cancelled;
@@ -178,7 +173,7 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
                 }
                 if (_logger.IsEnabled(LogLevel.Trace))
                 {
-                    _logger.LogTrace($"Scanning... FileEnumeration currentCount={_enumerateFiles.CurrentCount}  errorCount={_enumerateFiles.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+                    _logger.LogTrace($"Scanning... FileEnumeration currentCount={_enumerateFiles.CurrentCount}  errorCount={_enumerateFiles.ErrorCount}  {BuildCountsText()}");
                 }
             }
             WriteChanges();
@@ -198,7 +193,7 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
 
     private void LogFinished()
     {
-        _logger.LogInformation($"Scanning finished... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount}");
+        _logger.LogInformation($"Scanning finished... FileEnumeration currentCount={_enumerateFiles?.CurrentCount}  errorCount={_enumerateFiles?.ErrorCount}  {BuildCountsText()}");
         Throughput.LogSummary("Scanning finished");
     }
 
@@ -239,16 +234,56 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
         }
     }
 
-    private void CalcHash(ScanItemDto item)
+    /// <summary>
+    /// Existing rows that were updated in place because their file changed since the previous scan (resumed scan). Counted when the update is queued.
+    /// </summary>
+    public int ExistingRowsUpdatedCount { get; private set; }
+
+    /// <summary>
+    /// Surplus rows (more than one row for a path, a state that older versions produced) that were removed by a resumed scan, so that one row per path remains. Counted when the removal is queued.
+    /// </summary>
+    public int SurplusRowsRemovedCount { get; private set; }
+
+    /// <summary>
+    /// The counters of the log lines: what reached the database (inserted or updated rows, error items) plus what the resume filter did to existing rows.
+    /// SuccessCount counts every row that was written as a result of a scanned file: a new row and an updated row each count 1 (the same as an update in refresh),
+    /// a removed surplus row counts nothing.
+    /// </summary>
+    private string BuildCountsText() =>
+        $"AddedToDB SuccessCount={ScanJobDBInserts.TotalSuccessCount} ErrorCount={ScanJobDBInserts.TotalErrorCount} UpdatedExistingRows={ExistingRowsUpdatedCount} RemovedSurplusRows={SurplusRowsRemovedCount}";
+
+    /// <summary>
+    /// The resume filter for one file, shared by the sequential scan and the pipeline producer (one lookup, in the thread that enumerates).
+    /// Returns true when nothing is left to do for the file: it is already scanned and its path has no surplus rows.
+    /// <paramref name="existing"/> is what travels with the file otherwise: null for a new file (insert), the lookup for an already scanned file with surplus rows
+    /// (only the surplus rows are removed, the file is not hashed) and for a changed file (hash, update the primary row, remove the others).
+    /// </summary>
+    private bool ResumeSkips(ScanItemDto item, out ResumeLookup? existing)
     {
-        ScanHashOutcome outcome = HashItem(item, CancelToken);
+        long filterStart = Throughput.StartStage();
+        ResumeLookup lookup;
+        try
+        {
+            lookup = ScanJobDBInserts.LookupForResume(item);
+        }
+        finally
+        {
+            Throughput.EndStage(ThroughputStage.Database, filterStart);
+        }
+        existing = lookup.Kind == ResumeLookupKind.NotInDatabase ? null : lookup;
+        return lookup.Kind == ResumeLookupKind.AlreadyScanned && lookup.SurplusIds.Count == 0;
+    }
+
+    private void CalcHash(ScanItemDto item, ResumeLookup? existing)
+    {
+        ScanHashOutcome outcome = HashOrSkip(item, existing, CancelToken);
         if (outcome.Kind == ScanHashOutcomeKind.Cancelled)
         {
             // Cancelled inside a big file: nothing is stored, no error item, no error count. The caller looks at the token right after this
             // method returns, writes the pending items and ends the run as cancelled, the same as for a cancel between two files.
             return;
         }
-        RecordOutcome(item, outcome);
+        RecordOutcome(item, existing, outcome);
     }
 
     /// <summary>
@@ -264,9 +299,20 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
 
         /// <summary>The token was cancelled while the file was read: nothing is stored, nothing is counted.</summary>
         Cancelled,
+
+        /// <summary>The file is already scanned (its row matches) and was not opened. Only the surplus rows of its path are removed.</summary>
+        AlreadyScanned,
     }
 
     private readonly record struct ScanHashOutcome(ScanHashOutcomeKind Kind, long HashedBytes, Exception? Error);
+
+    private static readonly ScanHashOutcome s_alreadyScanned = new ScanHashOutcome(ScanHashOutcomeKind.AlreadyScanned, 0, null);
+
+    /// <summary>
+    /// The first half of the per-file logic for the sequential scan and the pipeline workers: hash the file, unless it is already scanned (then it is not opened).
+    /// </summary>
+    private ScanHashOutcome HashOrSkip(ScanItemDto item, ResumeLookup? existing, CancellationToken token) =>
+        existing?.Kind == ResumeLookupKind.AlreadyScanned ? s_alreadyScanned : HashItem(item, token);
 
     /// <summary>
     /// Hashes one file and puts the hash into the item (size and time stay as they were read before hashing). The first half of the per-file logic,
@@ -310,15 +356,37 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
     /// shared by the sequential scan and the pipeline writer. Must only be called by one thread at a time (the writer): it uses the database inserts, the
     /// throughput counters. A <see cref="BatchWriteException"/> of the database is not caught here, it ends the run.
     /// </summary>
-    private void RecordOutcome(ScanItemDto item, ScanHashOutcome outcome)
+    private void RecordOutcome(ScanItemDto item, ResumeLookup? existing, ScanHashOutcome outcome)
     {
+        if (outcome.Kind == ScanHashOutcomeKind.AlreadyScanned)
+        {
+            // Not hashed: the row of the file is current. Only rows of the same path that are surplus (an old database state) go.
+            long cleanStart = Throughput.StartStage();
+            try
+            {
+                RemoveSurplusRows(item, existing!);
+            }
+            finally
+            {
+                Throughput.EndStage(ThroughputStage.Database, cleanStart);
+            }
+            Throughput.AddFile();
+            return;
+        }
         Exception? hashError = outcome.Error;
         if (hashError is null)
         {
             long dbStart = Throughput.StartStage();
             try
             {
-                ScanJobDBInserts.Enqueue(item);
+                if (existing is { Kind: ResumeLookupKind.Changed })
+                {
+                    ReplaceExistingRows(item, existing);
+                }
+                else
+                {
+                    ScanJobDBInserts.Enqueue(item);
+                }
             }
             finally
             {
@@ -343,6 +411,38 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
                 Throughput.EndStage(ThroughputStage.Database, errorDbStart);
             }
             Throughput.AddFile(0);
+        }
+    }
+
+    /// <summary>
+    /// A changed file (its path has rows, none has its size and last write time) was hashed: one row per path remains. The surplus rows are removed FIRST and the primary
+    /// row is updated after them, so that a run that ends between the two (a failed flush, a crash) leaves a state that the next resumed scan repairs (the row is still
+    /// stale and the file is hashed again) instead of one where the stale rows are not found any more. The update writes size, last write time, hash and both scan dates
+    /// (the scan time of this item), not the creation time (the same as the update of refresh). The row that is kept is the one the lookup chose
+    /// (latest LastScanDateUTC, see <see cref="PrimaryRowChooser"/>). Must be called by the thread that writes (see <see cref="RecordOutcome"/>).
+    /// </summary>
+    private void ReplaceExistingRows(ScanItemDto item, ResumeLookup existing)
+    {
+        RemoveSurplusRows(item, existing);
+        // Only the key of the stub counts: the queued operation captures the new values now
+        ScanJobDBInserts.UpdateItem(new ScanItemDto { Id = existing.PrimaryId }, item.FileSize, item.FileLastModificationUTC, item.FileSha512Hash, item.LastScanDateUTC);
+        ExistingRowsUpdatedCount++;
+        if (_logger.IsEnabled(LogLevel.Trace))
+        {
+            _logger.LogTrace("File {file} changed since the last scan: row {id} updated, {surplus} surplus rows removed", item.FilenameAndPath, existing.PrimaryId, existing.SurplusIds.Count);
+        }
+    }
+
+    private void RemoveSurplusRows(ScanItemDto item, ResumeLookup existing)
+    {
+        foreach (Guid surplusId in existing.SurplusIds)
+        {
+            ScanJobDBInserts.RemoveItem(new ScanItemDto { Id = surplusId });
+            SurplusRowsRemovedCount++;
+        }
+        if (existing.SurplusIds.Count > 0 && _logger.IsEnabled(LogLevel.Trace))
+        {
+            _logger.LogTrace("File {file} had {count} surplus rows besides row {id}, they are removed", item.FilenameAndPath, existing.SurplusIds.Count, existing.PrimaryId);
         }
     }
 

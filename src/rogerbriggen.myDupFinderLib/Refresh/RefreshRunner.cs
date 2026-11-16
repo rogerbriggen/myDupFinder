@@ -55,6 +55,12 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     public int ErrorCount { get; private set; }
 
     /// <summary>
+    /// Surplus rows that were removed although their file exists: a path that has more than one row (a state that older versions of the scan produced) keeps
+    /// one row (see <see cref="PrimaryRowChooser"/>), the others are removed. Not included in <see cref="RemovedCount"/> (that is the rows of files that are gone).
+    /// </summary>
+    public int SurplusRowsRemovedCount { get; private set; }
+
+    /// <summary>
     /// Rows that were NOT removed although their file was not enumerated, because they lie below a directory that could not be read.
     /// Only a complete enumeration may delete: these files might well still exist.
     /// </summary>
@@ -93,13 +99,22 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
             long loadStart = Throughput.StartStage();
             var existingItems = ScanJobDBInserts.GetAllItemsByBasePath(RefreshJobDTO.BasePath);
             Throughput.EndStage(ThroughputStage.Database, loadStart);
-            var existingByPath = new Dictionary<string, ScanItemDto>(StringComparer.Ordinal);
-            foreach (var item in existingItems)
+            // The identity rule (the one place in this runner): only the rows of this job's OriginComputer and ScanName take part. The database can hold the scans of other
+            // computers or other named scans with equal path strings under the same base path; their rows are never updated, touched, removed or counted as surplus.
+            var ownItems = existingItems.Where(i => PrimaryRowChooser.HasIdentity(i, RefreshJobDTO.OriginComputer, RefreshJobDTO.ScanName)).ToList();
+            int foreignCount = existingItems.Count - ownItems.Count;
+            _logger.LogInformation("Refresh: Found {count} existing items in database for base path {basePath}, {foreign} of them belong to another OriginComputer/ScanName than this job ({origin}/{scan}) and are left alone", ownItems.Count, RefreshJobDTO.BasePath, foreignCount, RefreshJobDTO.OriginComputer, RefreshJobDTO.ScanName);
+            if (existingItems.Count > 0 && ownItems.Count == 0)
             {
-                existingByPath[item.FilenameAndPath] = item;
+                // Rows exist under this base path but none is of this job: refreshing would add every file again as a second set of rows. Change nothing (like a base path that cannot be listed).
+                var identities = existingItems.Select(i => $"{i.OriginComputer}/{i.ScanName}").Distinct(StringComparer.Ordinal).OrderBy(s => s, StringComparer.Ordinal);
+                _logger.LogError("Refresh: the database has {count} rows for base path {basePath}, but none belongs to this job's OriginComputer/ScanName ({origin}/{scan}). The identities that exist under this base path: {identities}. Nothing was changed. Fix OriginComputer and ScanName of the job.", existingItems.Count, RefreshJobDTO.BasePath, RefreshJobDTO.OriginComputer, RefreshJobDTO.ScanName, string.Join(", ", identities));
+                WriteChanges();
+                RunnerState = IService.EServiceState.finished;
+                return;
             }
-
-            _logger.LogInformation("Refresh: Found {count} existing items in database for base path {basePath}", existingItems.Count, RefreshJobDTO.BasePath);
+            // All rows of a path are kept (older versions of the scan could leave several rows for one path)
+            var existingByPath = PrimaryRowChooser.GroupByPath(ownItems);
 
             // Step 2: Enumerate files on disk and process them
             var filesOnDisk = new HashSet<string>(StringComparer.Ordinal);
@@ -166,23 +181,26 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                     long fileSize = metadata.Length;
                     DateTime fileLastModificationUTC = metadata.LastWriteTimeUtc;
 
-                    if (existingByPath.TryGetValue(currentFile, out var existingItem))
+                    if (existingByPath.TryGetValue(currentFile, out var existingRows))
                     {
-                        // File exists in DB - check if it changed
-                        if (existingItem.FileSize == fileSize && existingItem.FileLastModificationUTC == fileLastModificationUTC)
+                        // File exists in DB - the primary row of the path is the one that is kept, touched or updated; all other rows of the path are surplus
+                        var existingItem = PrimaryRowChooser.Choose(existingRows, fileSize, fileLastModificationUTC);
+                        if (PrimaryRowChooser.Matches(existingItem, fileSize, fileLastModificationUTC))
                         {
                             // Size and date unchanged - skip hash recalculation, just touch
                             long dbStart = Throughput.StartStage();
+                            RemoveSurplusRows(currentFile, existingRows, existingItem);
                             ScanJobDBInserts.TouchItem(existingItem, DateTime.UtcNow);
                             Throughput.EndStage(ThroughputStage.Database, dbStart);
                             UnchangedCount++;
                         }
                         else
                         {
-                            // Size or date changed - recalculate hash
+                            // Size or date changed - recalculate hash. If that fails nothing of the path is changed or removed (the exception leaves this block before any change is queued).
                             FileHashResult hashed = CalcHash(currentFile);
                             long oldSize = existingItem.FileSize;
                             long dbStart = Throughput.StartStage();
+                            RemoveSurplusRows(currentFile, existingRows, existingItem);
                             ScanJobDBInserts.UpdateItem(existingItem, fileSize, fileLastModificationUTC, hashed.Hash, DateTime.UtcNow);
                             Throughput.EndStage(ThroughputStage.Database, dbStart);
                             hashedBytes = hashed.BytesRead;
@@ -269,32 +287,36 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
                 if (!filesOnDisk.Contains(kvp.Key))
                 {
-                    if (unreadableMatcher.IsProtected(kvp.Key))
+                    // The file is gone: ALL rows of the path go, each of them subject to the protection of unreadable directories
+                    foreach (ScanItemDto row in kvp.Value)
                     {
-                        ProtectedCount++;
-                        if (_logger.IsEnabled(LogLevel.Trace))
+                        if (unreadableMatcher.IsProtected(row.FilenameAndPath))
                         {
-                            _logger.LogTrace("Refresh: Kept {file}, it lies below a directory that could not be read", kvp.Key);
+                            ProtectedCount++;
+                            if (_logger.IsEnabled(LogLevel.Trace))
+                            {
+                                _logger.LogTrace("Refresh: Kept row {id} of {file}, it lies below a directory that could not be read", row.Id, kvp.Key);
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                    try
-                    {
-                        long dbStart = Throughput.StartStage();
-                        ScanJobDBInserts.RemoveItem(kvp.Value);
-                        Throughput.EndStage(ThroughputStage.Database, dbStart);
-                        RemovedCount++;
-                        if (_logger.IsEnabled(LogLevel.Trace))
+                        try
                         {
-                            _logger.LogTrace("Refresh: Removed deleted file {file}", kvp.Key);
+                            long dbStart = Throughput.StartStage();
+                            ScanJobDBInserts.RemoveItem(row);
+                            Throughput.EndStage(ThroughputStage.Database, dbStart);
+                            RemovedCount++;
+                            if (_logger.IsEnabled(LogLevel.Trace))
+                            {
+                                _logger.LogTrace("Refresh: Removed deleted file {file} (row {id})", kvp.Key, row.Id);
+                            }
                         }
-                    }
 #pragma warning disable CA1031 // Do not catch general exception types
-                    catch (Exception ex) when (ex is not BatchWriteException)
+                        catch (Exception ex) when (ex is not BatchWriteException)
 #pragma warning restore CA1031 // Do not catch general exception types
-                    {
-                        _logger.LogError(ex, "Refresh: Error removing file {file} from database", kvp.Key);
-                        ErrorCount++;
+                        {
+                            _logger.LogError(ex, "Refresh: Error removing file {file} from database", kvp.Key);
+                            ErrorCount++;
+                        }
                     }
                 }
             }
@@ -305,7 +327,11 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
             {
                 _logger.LogWarning("Refresh: {count} directories could not be read completely. {kept} database rows below them were kept (not removed, even if the file is gone). Directories: {directories}", UnreadableDirectories.Count, ProtectedCount, UnreadableDirectoryLog.Join(UnreadableDirectories));
             }
-            _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} KeptBecauseDirectoryUnreadable={kept} UnreadableDirectories={unreadable}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, ProtectedCount, UnreadableDirectories.Count);
+            if (SurplusRowsRemovedCount > 0)
+            {
+                _logger.LogWarning("Refresh: {surplus} surplus rows were removed. Some paths had more than one row in the database (an old database state). One row per path was kept: the one that matches the file (size and last write time), otherwise the one scanned last.", SurplusRowsRemovedCount);
+            }
+            _logger.LogInformation("Refresh finished. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} KeptBecauseDirectoryUnreadable={kept} UnreadableDirectories={unreadable} SurplusRowsRemoved={surplus}", AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount, ProtectedCount, UnreadableDirectories.Count, SurplusRowsRemovedCount);
             Throughput.LogSummary("Refresh finished");
         }
         catch (BatchWriteException ex)
@@ -318,6 +344,32 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 #pragma warning restore CA1031 // Do not catch general exception types
         {
             _logger.LogError(ex, "Error in Refresh!");
+        }
+    }
+
+    /// <summary>
+    /// Queues the removal of every row of the path except the primary row (the file exists, so these rows are stale duplicates). Called only when the path is
+    /// going to be touched or updated, never when hashing the changed file failed.
+    /// </summary>
+    private void RemoveSurplusRows(string file, List<ScanItemDto> rowsOfPath, ScanItemDto primary)
+    {
+        if (rowsOfPath.Count < 2)
+        {
+            return;
+        }
+        int removed = 0;
+        foreach (ScanItemDto row in rowsOfPath)
+        {
+            if (row.Id != primary.Id)
+            {
+                ScanJobDBInserts.RemoveItem(row);
+                SurplusRowsRemovedCount++;
+                removed++;
+            }
+        }
+        if (_logger.IsEnabled(LogLevel.Trace))
+        {
+            _logger.LogTrace("Refresh: {file} had {count} rows, kept row {id}, removed {removed} surplus rows", file, rowsOfPath.Count, primary.Id, removed);
         }
     }
 
