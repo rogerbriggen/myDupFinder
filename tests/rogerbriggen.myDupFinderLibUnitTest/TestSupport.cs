@@ -31,6 +31,9 @@ internal sealed class ListLoggerProvider : ILoggerProvider
 {
     private readonly List<LogEntry> _entries = new List<LogEntry>();
 
+    /// <summary>Called with every message after it was stored, on the thread that logged it (lets a test act at a precise moment of a run).</summary>
+    public Action<string>? OnMessage { get; set; }
+
     public IReadOnlyList<LogEntry> Entries
     {
         get
@@ -73,6 +76,7 @@ internal sealed class ListLoggerProvider : ILoggerProvider
             {
                 _provider._entries.Add(new LogEntry(logLevel, formatter(state, exception)));
             }
+            _provider.OnMessage?.Invoke(formatter(state, exception));
         }
     }
 }

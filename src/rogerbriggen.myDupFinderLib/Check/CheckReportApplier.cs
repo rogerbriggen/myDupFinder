@@ -15,8 +15,11 @@ namespace RogerBriggen.MyDupFinderLib;
 /// Applies a check CSV back to the database referenced in the CSV header.
 /// Users edit the CSV (deleting rows they do not want applied) before invoking apply.
 /// The rows are applied in transactions of <see cref="RowsPerTransaction"/> report rows. A crash loses at most the open transaction, and because
-/// applying is idempotent (inserts look for the path first, updates set fixed values, a removed row is skipped the second time) the same report can be applied again.
+/// applying is idempotent (inserts look for the path first, a row that already has the state of the report is counted as applied, a removed row is skipped the second time) the same report can be applied again.
 /// A hash in the database always belongs to the size and modification time stored with it: size and modification time are only written together with the hash from the same row.
+/// A report (schema version 2) only changes or removes a row that is still in the state the check saw (the "_DB" columns): a row that was changed after the report was written is skipped as stale,
+/// a row that already has the state the report would write counts as already applied.
+/// The report is read twice (it is streamed, never held in memory): a validation pass that parses every row before anything is applied, then the apply pass.
 /// </summary>
 public sealed class CheckReportApplier
 {
@@ -38,7 +41,7 @@ public sealed class CheckReportApplier
 
     /// <summary>
     /// Rows that were skipped (not applied, nothing written), for any reason: empty id, missing fields, a MissingOnDisk row whose row is gone,
-    /// a NewOnDisk row whose path exists with other values, a row without hash that is not a pure path move.
+    /// a NewOnDisk row whose path exists with other values, a row without hash that is not a pure path move, a stale row.
     /// </summary>
     public int SkippedCount { get; private set; }
 
@@ -49,7 +52,14 @@ public sealed class CheckReportApplier
     public int SkippedNoHashCount { get; private set; }
 
     /// <summary>
-    /// NewOnDisk rows whose file is already in the database with the same path, hash, size and modification time (the report was applied before). Nothing was written.
+    /// Rows whose database row was changed after the report was written (it is no longer in the state of the "_DB" columns and not at the state the row would write),
+    /// or was removed after the report was written. Nothing was written, check must be run again. Also counted in <see cref="SkippedCount"/>.
+    /// </summary>
+    public int SkippedStaleCount { get; private set; }
+
+    /// <summary>
+    /// Rows that were applied before: a NewOnDisk row whose file is already in the database with the same path, hash, size and modification time,
+    /// or an update row whose database row already has the state the row would write. Nothing was written.
     /// </summary>
     public int AlreadyAppliedCount { get; private set; }
 
@@ -79,6 +89,10 @@ public sealed class CheckReportApplier
         var (header, rows) = CheckReportCsv.Read(reportFilePath);
         if (header.SchemaVersion != CheckReportHeader.CurrentSchemaVersion)
         {
+            if (header.SchemaVersion < CheckReportHeader.CurrentSchemaVersion)
+            {
+                throw new InvalidOperationException($"Report schema version {header.SchemaVersion} was written by an older version of myDupFinder and cannot be applied by this build (expected {CheckReportHeader.CurrentSchemaVersion}). Run check again with this version and apply the new report.");
+            }
             throw new InvalidOperationException($"Report schema version {header.SchemaVersion} is not supported by this build (expected {CheckReportHeader.CurrentSchemaVersion}).");
         }
         if (!System.IO.File.Exists(header.DatabaseFile))
@@ -86,43 +100,69 @@ public sealed class CheckReportApplier
             throw new InvalidOperationException($"DatabaseFile from report header does not exist: {header.DatabaseFile}");
         }
 
+        // Validation pass: a malformed row anywhere in the report throws here, before anything is applied. Nothing is kept, the rows are only counted.
+        long rowCount = 0;
+        foreach (var _ in rows)
+        {
+            rowCount++;
+        }
+
         using var db = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         db.SetupDB(header.DatabaseFile);
 
-        _logger.LogInformation("applyCheck: applying {file} to {db}", reportFilePath, header.DatabaseFile);
+        _logger.LogInformation("applyCheck: applying {rows} rows of {file} to {db}", rowCount, reportFilePath, header.DatabaseFile);
 
         var applyDate = DateTime.UtcNow;
         var tally = new BatchTally();
         int rowsInBatch = 0;
         db.BeginBatch();
-        foreach (var row in rows)
+        try
         {
-            try
+            // Apply pass: reads the file again, row by row
+            foreach (var row in rows)
             {
-                ApplyRow(db, row, header, applyDate, tally);
-            }
+                try
+                {
+                    ApplyRow(db, row, header, applyDate, tally);
+                }
 #pragma warning disable CA1031 // Do not catch general exception types
-            catch (Exception ex)
+                catch (Exception ex)
 #pragma warning restore CA1031 // Do not catch general exception types
-            {
-                // The failed save was rolled back to its savepoint, the other rows of the transaction stay valid
-                _logger.LogError(ex, "applyCheck: failed to apply row Category={cat} Id={id}", row.Category, row.ScanItemId);
-                ErrorCount++;
+                {
+                    // The failed save was rolled back to its savepoint, the other rows of the transaction stay valid
+                    _logger.LogError(ex, "applyCheck: failed to apply row Category={cat} Id={id}", row.Category, row.ScanItemId);
+                    ErrorCount++;
+                }
+                rowsInBatch++;
+                if (rowsInBatch >= RowsPerTransaction)
+                {
+                    CommitBatch(db, tally, rowsInBatch);
+                    tally = new BatchTally();
+                    rowsInBatch = 0;
+                    db.BeginBatch();
+                }
             }
-            rowsInBatch++;
-            if (rowsInBatch >= RowsPerTransaction)
-            {
-                CommitBatch(db, tally, rowsInBatch);
-                tally = new BatchTally();
-                rowsInBatch = 0;
-                db.BeginBatch();
-            }
+        }
+#pragma warning disable CA1031 // Not swallowed: the open transaction is rolled back and the exception is thrown again
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            // Reading the next row failed (the file changed after the validation pass): the open transaction is not committed
+            db.RollbackBatch();
+            _logger.LogError(
+                ex,
+                "applyCheck: the report could not be read to the end (was it changed while it was applied?). The open transaction ({rows} report rows) was rolled back. Transactions that were committed before stay in the database (Updated={upd} Inserted={ins} Removed={rm}); apply the report again after checking the file.",
+                rowsInBatch,
+                UpdatedCount,
+                InsertedCount,
+                RemovedCount);
+            throw;
         }
         CommitBatch(db, tally, rowsInBatch);
 
         _logger.LogInformation(
-            "applyCheck finished. Updated={upd} Inserted={ins} Removed={rm} AlreadyApplied={already} Skipped={skip} (of which without hash={noHash}) Errors={err} FailedCommits={failedCommits}",
-            UpdatedCount, InsertedCount, RemovedCount, AlreadyAppliedCount, SkippedCount, SkippedNoHashCount, ErrorCount, FailedCommitCount);
+            "applyCheck finished. Updated={upd} Inserted={ins} Removed={rm} AlreadyApplied={already} Skipped={skip} (of which without hash={noHash}, stale={stale}) Errors={err} FailedCommits={failedCommits}",
+            UpdatedCount, InsertedCount, RemovedCount, AlreadyAppliedCount, SkippedCount, SkippedNoHashCount, SkippedStaleCount, ErrorCount, FailedCommitCount);
     }
 
     /// <summary>
@@ -138,8 +178,9 @@ public sealed class CheckReportApplier
         catch (BatchWriteException ex)
         {
             FailedCommitCount++;
-            ErrorCount += tally.Writes;
-            _logger.LogError(ex, "applyCheck: committing a transaction that covered {rows} report rows failed. {writes} changes of these rows were rolled back and are NOT in the database; apply the report again to retry them.", rowsInBatch, tally.Writes);
+            // The rows that were found already applied are errors too: that was judged inside the transaction that was rolled back
+            ErrorCount += tally.Writes + tally.AlreadyApplied;
+            _logger.LogError(ex, "applyCheck: committing a transaction that covered {rows} report rows failed. {writes} changes of these rows were rolled back and are NOT in the database, and {already} rows that were found already applied are counted as errors too; apply the report again to retry them.", rowsInBatch, tally.Writes, tally.AlreadyApplied);
             return;
         }
         UpdatedCount += tally.Updated;
@@ -158,21 +199,7 @@ public sealed class CheckReportApplier
                 ApplyUpdate(db, row, applyDate, tally);
                 break;
             case CheckCategory.MissingOnDisk:
-                if (row.ScanItemId == Guid.Empty)
-                {
-                    _logger.LogWarning("applyCheck: MissingOnDisk row had empty ScanItemId, skipping.");
-                    SkippedCount++;
-                    break;
-                }
-                if (db.RemoveItemById(row.ScanItemId))
-                {
-                    tally.Removed++;
-                }
-                else
-                {
-                    _logger.LogWarning("applyCheck: MissingOnDisk row {id} not found in DB, skipping.", row.ScanItemId);
-                    SkippedCount++;
-                }
+                ApplyRemove(db, row, tally);
                 break;
             case CheckCategory.NewOnDisk:
                 ApplyInsert(db, row, header, applyDate, tally);
@@ -186,20 +213,96 @@ public sealed class CheckReportApplier
 
     /// <summary>
     /// True when a row without hash only describes a moved file: PathMoved, and the size and modification time on disk (Disk columns) are the ones the
-    /// database row has now. The check writes exactly this (category ModifiedNoHashChange, HashDisk empty) with SkipHashCheck when size and time did not
-    /// change; when one of them changed it writes category Modified and the Disk columns differ from the row.
-    /// The Disk columns are compared with the live database row, not with the report's DB columns: in reports written before the fix of the time columns the MTime_DB
-    /// column was written from a value that was read back from SQLite without a time zone kind, so it is shifted by the local UTC offset and cannot be compared with
-    /// MTime_Disk. Reports written now have the correct value, but older reports can still be applied, so the comparison against the live row stays.
+    /// database row had when the check ran (DB columns). The check writes exactly this (category ModifiedNoHashChange, HashDisk empty) with SkipHashCheck when size and time did not
+    /// change; when one of them changed it writes category Modified and the Disk columns differ from the DB columns.
     /// </summary>
-    private static bool IsPathMoveOnly(ScanJobDBInserts db, CheckReportRow row)
+    private static bool IsPathMoveOnly(CheckReportRow row) =>
+        row.PathMoved
+        && row.FilenameAndPathDisk is not null
+        && row.PathBaseDisk is not null
+        && row.FileSizeDisk is not null
+        && row.MTimeDisk is not null
+        && row.FileSizeDB == row.FileSizeDisk
+        && row.MTimeDB is not null
+        && row.MTimeDB.Value.Ticks == row.MTimeDisk.Value.Ticks;
+
+    private static bool SameHash(string? a, string? b) => string.Equals(a ?? string.Empty, b ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when the row is still as the check saw it: path, base path, size, modification time (ticks) and hash (ignoring case) of the "_DB" columns.</summary>
+    private static bool IsAtReportedState(ScanItemDto current, CheckReportRow row) =>
+        row.FilenameAndPathDB is not null
+        && row.PathBaseDB is not null
+        && row.FileSizeDB is not null
+        && row.MTimeDB is not null
+        && string.Equals(current.FilenameAndPath, row.FilenameAndPathDB, StringComparison.Ordinal)
+        && string.Equals(current.PathBase, row.PathBaseDB, StringComparison.Ordinal)
+        && current.FileSize == row.FileSizeDB.Value
+        && current.FileLastModificationUTC.Ticks == row.MTimeDB.Value.Ticks
+        && SameHash(current.FileSha512Hash, row.HashDB);
+
+    /// <summary>
+    /// True when the row has the state the update would produce: the reported state (all five "_DB" values) overridden by what the update writes
+    /// (size, time and hash together, path and base path when they are rewritten). All five values are compared.
+    /// </summary>
+    private static bool IsAtTargetState(ScanItemDto current, CheckReportRow row, long? newSize, DateTime? newMTime, string? newHash, string? newPath, string? newBase)
     {
-        if (!row.PathMoved || row.FilenameAndPathDisk is null || row.PathBaseDisk is null || row.FileSizeDisk is null || row.MTimeDisk is null)
+        var path = newPath ?? row.FilenameAndPathDB;
+        var pathBase = newBase ?? row.PathBaseDB;
+        var size = newSize ?? row.FileSizeDB;
+        var mtime = newMTime ?? row.MTimeDB;
+        var hash = newHash ?? row.HashDB;
+        return path is not null
+            && pathBase is not null
+            && size is not null
+            && mtime is not null
+            && string.Equals(current.FilenameAndPath, path, StringComparison.Ordinal)
+            && string.Equals(current.PathBase, pathBase, StringComparison.Ordinal)
+            && current.FileSize == size.Value
+            && current.FileLastModificationUTC.Ticks == mtime.Value.Ticks
+            && SameHash(current.FileSha512Hash, hash);
+    }
+
+    private void SkipStale(CheckReportRow row, string what)
+    {
+        _logger.LogWarning(
+            "applyCheck: {cat} row for {file} was NOT applied: {what} after the report was written. The report is out of date for this file, run check again.",
+            row.Category,
+            row.FilenameAndPathDB ?? row.FilenameAndPathDisk,
+            what);
+        SkippedCount++;
+        SkippedStaleCount++;
+    }
+
+    private void ApplyRemove(ScanJobDBInserts db, CheckReportRow row, BatchTally tally)
+    {
+        if (row.ScanItemId == Guid.Empty)
         {
-            return false;
+            _logger.LogWarning("applyCheck: MissingOnDisk row had empty ScanItemId, skipping.");
+            SkippedCount++;
+            return;
         }
-        var current = db.GetItemById(row.ScanItemId) ?? throw new InvalidOperationException($"No ScanItem with Id {row.ScanItemId} found.");
-        return current.FileSize == row.FileSizeDisk.Value && current.FileLastModificationUTC == row.MTimeDisk.Value;
+        var current = db.GetItemById(row.ScanItemId);
+        if (current is null)
+        {
+            // The row is gone: the report was applied before (or the row was removed some other way). Nothing to do.
+            _logger.LogWarning("applyCheck: MissingOnDisk row {id} not found in DB, skipping.", row.ScanItemId);
+            SkippedCount++;
+            return;
+        }
+        if (!IsAtReportedState(current, row))
+        {
+            SkipStale(row, "the database row changed");
+            return;
+        }
+        if (db.RemoveItemById(row.ScanItemId))
+        {
+            tally.Removed++;
+        }
+        else
+        {
+            _logger.LogWarning("applyCheck: MissingOnDisk row {id} not found in DB, skipping.", row.ScanItemId);
+            SkippedCount++;
+        }
     }
 
     private void ApplyUpdate(ScanJobDBInserts db, CheckReportRow row, DateTime applyDate, BatchTally tally)
@@ -234,7 +337,7 @@ public sealed class CheckReportApplier
             newHash = row.HashDisk;
             hashWasRecomputed = true;
         }
-        else if (IsPathMoveOnly(db, row))
+        else if (IsPathMoveOnly(row))
         {
             // Only the location changed, size, time and hash stay as they are (nothing is written for them)
             pathRewrite = true;
@@ -256,6 +359,27 @@ public sealed class CheckReportApplier
         {
             newPath = row.FilenameAndPathDisk;
             newBase = row.PathBaseDisk;
+        }
+
+        // Only a row that is still as the check saw it is changed
+        var current = db.GetItemById(row.ScanItemId);
+        if (current is null)
+        {
+            SkipStale(row, "the database row was removed");
+            return;
+        }
+        if (!IsAtReportedState(current, row))
+        {
+            if (IsAtTargetState(current, row, newSize, newMTime, newHash, newPath, newBase))
+            {
+                _logger.LogTrace("applyCheck: {cat} row for {file} is already in the database with the state of the report, nothing to do.", row.Category, row.FilenameAndPathDisk ?? row.FilenameAndPathDB);
+                tally.AlreadyApplied++;
+            }
+            else
+            {
+                SkipStale(row, "the database row changed");
+            }
+            return;
         }
 
         db.ApplyUpdateById(

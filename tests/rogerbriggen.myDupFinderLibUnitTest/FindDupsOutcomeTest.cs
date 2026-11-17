@@ -229,8 +229,9 @@ public class FindDupsOutcomeTest : IDisposable
     public void Run_DatabaseCannotBeOpened_EndsFailed(bool crossDb)
     {
         var dto = CreateJob(crossDb);
-        File.Delete(_baseDbPath);
+        // The pooled connections of the seeding still hold the file open: clear the pools before the file is replaced
         SqliteConnection.ClearAllPools();
+        File.Delete(_baseDbPath);
         File.WriteAllText(_baseDbPath, new string('x', 5000)); // no database
 
         var state = Run(dto, crossDb, CancellationToken.None, out var log);

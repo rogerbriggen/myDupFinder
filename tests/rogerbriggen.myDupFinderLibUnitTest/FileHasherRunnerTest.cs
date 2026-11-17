@@ -115,8 +115,9 @@ public class FileHasherRunnerTest : IDisposable
         SqliteConnection.ClearAllPools();
         string report = Directory.GetFiles(_reportDir, "check-*.csv").Single();
         var (_, rows) = CheckReportCsv.Read(report);
+        var rowArray = rows.ToArray();
         File.Delete(report);
-        return (runner, rows.ToArray());
+        return (runner, rowArray);
     }
 
     private List<ScanItemDto> ReadItems()

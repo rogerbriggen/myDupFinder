@@ -152,6 +152,38 @@ internal static class ApplyTestSupport
             HashDisk = hashDisk,
         };
 
+    /// <summary>A MissingOnDisk row for the seeded item, as a check writes it: only the DB columns of the item.</summary>
+    public static CheckReportRow MissingRow(ScanItemDto item) =>
+        new()
+        {
+            Category = CheckCategory.MissingOnDisk,
+            ScanItemId = item.Id,
+            FilenameAndPathDB = item.FilenameAndPath,
+            PathBaseDB = item.PathBase,
+            FileSizeDB = item.FileSize,
+            MTimeDB = item.FileLastModificationUTC,
+            HashDB = item.FileSha512Hash,
+        };
+
+    /// <summary>A row of a file that was only moved (check with SkipHashCheck and IgnoreBasePath): the same size and time on both sides, no hash on disk.</summary>
+    public static CheckReportRow PathMoveRow(ScanItemDto item, string newPath, string newBase)
+    {
+        var row = ModifiedRow(item, item.FileSize, item.FileLastModificationUTC, hashDisk: null);
+        row.Category = CheckCategory.ModifiedNoHashChange;
+        row.PathMoved = true;
+        row.FilenameAndPathDisk = newPath;
+        row.PathBaseDisk = newBase;
+        return row;
+    }
+
+    /// <summary>Changes a row behind the back of a report, as a refresh or another applyCheck would: size, time and hash (and the path when given) are overwritten.</summary>
+    public static void ChangeRow(string dbPath, Guid id, long size, DateTime mtime, string hash, string? path = null, string? pathBase = null)
+    {
+        using var db = new ScanJobDBInserts(null);
+        db.SetupDB(dbPath);
+        db.ApplyUpdateById(id, size, mtime, hash, DateTime.UtcNow, true, path, pathBase);
+    }
+
     private static void Execute(string dbPath, string sql)
     {
         // Creates and migrates the database when it does not exist yet (the triggers need the table)
