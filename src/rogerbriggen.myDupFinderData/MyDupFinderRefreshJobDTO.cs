@@ -43,6 +43,12 @@ public class MyDupFinderRefreshJobDTO
     /// </summary>
     public DatabaseSynchronous DatabaseSynchronous { get; set; } = DatabaseSynchronous.Full;
 
+    /// <summary>
+    /// false (the default, also used when the element is missing in the project file): the job refuses to run (it fails and writes nothing) when the volume of the BasePath is not the one that was
+    /// recorded for it, or cannot be verified. true: accept the change for this run (a disk that was cloned, replaced or reformatted on purpose); the new identity is recorded. Set it for one run only.
+    /// </summary>
+    public bool AcceptVolumeChange { get; set; }
+
     public static void CheckSanity(MyDupFinderRefreshJobDTO dto)
     {
         if (string.IsNullOrWhiteSpace(dto.JobName))

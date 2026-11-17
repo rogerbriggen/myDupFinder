@@ -28,11 +28,13 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
 
     /// <param name="fileSource">Only for tests: where the files come from (for example with unreadable directories). Default: the real file system.</param>
     /// <param name="fileHasher">Only for tests: a hasher with hooks or another buffer size. Default: <see cref="FileHasher.Default"/>.</param>
-    internal CheckRunner(MyDupFinderCheckJobDTO checkJobDTO, ILogger<CheckRunner>? logger, IServiceProvider serviceProvider, IFileEnumerationSource? fileSource, FileHasher? fileHasher = null) : base(logger, serviceProvider)
+    /// <param name="volumeIdentityProvider">Only for tests: the identity of the volume of the base path. Default: the file system of this computer.</param>
+    internal CheckRunner(MyDupFinderCheckJobDTO checkJobDTO, ILogger<CheckRunner>? logger, IServiceProvider serviceProvider, IFileEnumerationSource? fileSource, FileHasher? fileHasher = null, IVolumeIdentityProvider? volumeIdentityProvider = null) : base(logger, serviceProvider)
     {
         CheckJobDTO = checkJobDTO;
         _fileSource = fileSource ?? FileTreeEnumerationSource.Instance;
         _fileHasher = fileHasher ?? FileHasher.Default;
+        _volumeIdentityProvider = volumeIdentityProvider ?? SystemVolumeIdentityProvider.Instance;
         DbInserts = new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -42,6 +44,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     private ScanJobDBInserts DbInserts { get; }
     private readonly IFileEnumerationSource _fileSource;
     private readonly FileHasher _fileHasher;
+    private readonly IVolumeIdentityProvider _volumeIdentityProvider;
 
     public int BitRotSuspectCount { get; private set; }
     public int ModifiedCount { get; private set; }
@@ -128,6 +131,13 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         var basePath = scanJob.BasePath;
         //No throttling when ThrottlePercent is 0
         DiscThrottle? discThrottle = DiscThrottle.CreateForJob(scanJob.ThrottlePercent);
+
+        // Read-only: a check never records the identity. A volume that is not the recorded one would report every row as MissingOnDisk, so no report is written
+        if (!VolumeIdentityGuard.Verify(_volumeIdentityProvider, DbInserts, scanJob.OriginComputer, scanJob.ScanName, basePath, scanJob.AcceptVolumeChange, readOnly: true, _logger))
+        {
+            RunnerState = IService.EServiceState.failed;
+            return;
+        }
 
         long loadStart = Throughput.StartStage();
         var existingItems = CheckJobDTO.IgnoreBasePath

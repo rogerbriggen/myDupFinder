@@ -24,6 +24,11 @@ public class DubFinderContext : DbContext
     /// </summary>
     public DbSet<ScanErrorItemDto>? ScanErrorItems { get; set; }
 
+    /// <summary>
+    /// The identity of the volume of each scanned base path
+    /// </summary>
+    public DbSet<ScanVolumeDto>? ScanVolumes { get; set; }
+
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -36,5 +41,8 @@ public class DubFinderContext : DbContext
             .HasIndex(b => b.FileSize);
         modelBuilder.Entity<ScanItemDto>()
             .HasIndex(b => b.FilenameAndPath);
+        modelBuilder.Entity<ScanVolumeDto>()
+            .HasIndex(b => new { b.OriginComputer, b.ScanName, b.BasePath })
+            .IsUnique();
     }
 }

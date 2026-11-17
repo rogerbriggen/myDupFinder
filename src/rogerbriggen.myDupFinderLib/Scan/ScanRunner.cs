@@ -27,11 +27,13 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
 
     /// <param name="dbInserts">Only for tests: a ready made object (for example with a small batch size). The runner disposes it.</param>
     /// <param name="fileHasher">Only for tests: a hasher with hooks or another buffer size. Default: <see cref="FileHasher.Default"/>.</param>
-    internal ScanRunner(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null, FileHasher? fileHasher = null) : base(logger, serviceProvider)
+    /// <param name="volumeIdentityProvider">Only for tests: the identity of the volume of the base path. Default: the file system of this computer.</param>
+    internal ScanRunner(MyDupFinderScanJobDTO scanJobDTO, ILogger<ScanRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null, FileHasher? fileHasher = null, IVolumeIdentityProvider? volumeIdentityProvider = null) : base(logger, serviceProvider)
     {
         ScanJobDTO = scanJobDTO;
         _fileSource = fileSource;
         _fileHasher = fileHasher ?? FileHasher.Default;
+        _volumeIdentityProvider = volumeIdentityProvider ?? SystemVolumeIdentityProvider.Instance;
         ScanJobDBInserts = dbInserts ?? new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -49,6 +51,7 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
     private readonly IFileEnumerationSource? _fileSource;
 
     private readonly FileHasher _fileHasher;
+    private readonly IVolumeIdentityProvider _volumeIdentityProvider;
 
     /// <summary>
     /// Files, bytes and stage times of the current run. Thread safe (the pipeline uses it from several threads).
@@ -65,6 +68,12 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
             ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile, ScanJobDTO.DatabaseSynchronous);
             _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
             Throughput = new ThroughputTracker(_logger);
+            if (!VolumeIdentityGuard.Verify(_volumeIdentityProvider, ScanJobDBInserts, ScanJobDTO.OriginComputer, ScanJobDTO.ScanName, ScanJobDTO.BasePath, ScanJobDTO.AcceptVolumeChange, readOnly: false, _logger))
+            {
+                // Not the volume that was scanned: nothing is enumerated and nothing is written
+                RunnerState = IService.EServiceState.failed;
+                return;
+            }
             try
             {
                 _enumerateFiles = new EnumerateFilesFromDiscToIndex(ScanJobDTO, _serviceProvider.GetService<ILogger<EnumerateFilesFromDiscToIndex>>(), _fileSource);

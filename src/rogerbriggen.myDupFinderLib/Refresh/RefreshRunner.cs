@@ -29,11 +29,13 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     /// <param name="dbInserts">Only for tests: a ready made object (for example with a small batch size). The runner disposes it.</param>
     /// <param name="fileSource">Only for tests: where the files come from (for example with unreadable directories). Default: the real file system.</param>
     /// <param name="fileHasher">Only for tests: a hasher with hooks or another buffer size. Default: <see cref="FileHasher.Default"/>.</param>
-    internal RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null, FileHasher? fileHasher = null) : base(logger, serviceProvider)
+    /// <param name="volumeIdentityProvider">Only for tests: the identity of the volume of the base path. Default: the file system of this computer.</param>
+    internal RefreshRunner(MyDupFinderRefreshJobDTO refreshJobDTO, ILogger<RefreshRunner>? logger, IServiceProvider serviceProvider, ScanJobDBInserts? dbInserts, IFileEnumerationSource? fileSource = null, FileHasher? fileHasher = null, IVolumeIdentityProvider? volumeIdentityProvider = null) : base(logger, serviceProvider)
     {
         RefreshJobDTO = refreshJobDTO;
         _fileSource = fileSource ?? FileTreeEnumerationSource.Instance;
         _fileHasher = fileHasher ?? FileHasher.Default;
+        _volumeIdentityProvider = volumeIdentityProvider ?? SystemVolumeIdentityProvider.Instance;
         ScanJobDBInserts = dbInserts ?? new ScanJobDBInserts(_serviceProvider.GetService<ILogger<ScanJobDBInserts>>());
         Throughput = new ThroughputTracker(_logger);
     }
@@ -47,6 +49,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     private readonly IFileEnumerationSource _fileSource;
 
     private readonly FileHasher _fileHasher;
+    private readonly IVolumeIdentityProvider _volumeIdentityProvider;
 
     public int AddedCount { get; private set; }
     public int UpdatedCount { get; private set; }
@@ -117,6 +120,12 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
 
     private void Refresh()
     {
+        // Before anything is loaded or queued: if the volume is not the recorded one, the files found (or not found) say nothing about the scan, so nothing may be written
+        if (!VolumeIdentityGuard.Verify(_volumeIdentityProvider, ScanJobDBInserts, RefreshJobDTO.OriginComputer, RefreshJobDTO.ScanName, RefreshJobDTO.BasePath, RefreshJobDTO.AcceptVolumeChange, readOnly: false, _logger))
+        {
+            RunnerState = IService.EServiceState.failed;
+            return;
+        }
         //No throttling when ThrottlePercent is 0
         DiscThrottle? discThrottle = DiscThrottle.CreateForJob(RefreshJobDTO.ThrottlePercent);
         try
