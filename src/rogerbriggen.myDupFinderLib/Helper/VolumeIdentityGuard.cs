@@ -35,7 +35,7 @@ internal static class VolumeIdentityGuard
     {
         VolumeIdentityResult current = provider.GetIdentity(basePath);
         var stored = db.GetScanVolume(originComputer, scanName, basePath);
-        VolumeIdentityDecision decision = Decide(current, stored?.VolumeIdentity, acceptVolumeChange, basePath, logger, () => db.IsBasePathAlreadyInDB(basePath), readOnly);
+        VolumeIdentityDecision decision = Decide(current, stored?.VolumeIdentity, acceptVolumeChange, basePath, logger, () => db.HasRowsForBasePath(basePath), readOnly);
         if (decision == VolumeIdentityDecision.ProceedRecord && !readOnly)
         {
             db.SaveScanVolume(originComputer, scanName, basePath, current.Identity!, DateTime.UtcNow);

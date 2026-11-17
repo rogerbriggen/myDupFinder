@@ -523,9 +523,26 @@ public class ScanJobDBInserts : IDisposable
         }
     }
 
+    /// <summary>
+    /// True if at least one scan item has this PathBase. Used by the volume identity check to tell an old database (rows, but no identity recorded) from a first run.
+    /// </summary>
+    public bool HasRowsForBasePath(string basePath)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("HasRowsForBasePath called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return HasRowsForBasePath(_dbContext, basePath);
+        }
+    }
+
     // The queries are static and take the context, so the tests can run them with the real code and look at the SQL and the query plan.
 
     internal static bool IsEmptyScanItemTable(DubFinderContext context) => !context.Set<ScanItemDto>().Any();
+
+    internal static bool HasRowsForBasePath(DubFinderContext context, string basePath) => context.Set<ScanItemDto>().Any(s => s.PathBase == basePath);
 
     /// <summary>
     /// The rows of the resume lookup: all rows with this FilenameAndPath that were written by this ScanExecutionComputer (the resume identity of the scan:
