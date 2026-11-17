@@ -18,7 +18,7 @@ public class ScanErrorItemDto
         FileSize = si.FileSize;
         FileCreationUTC = si.FileCreationUTC;
         FileLastModificationUTC = si.FileLastModificationUTC;
-        ErrorOccurrence = DateTime.Now;
+        ErrorOccurrence = DateTime.UtcNow;
         MyException = myException.ToString();
         DateRunStartedUTC = dateRunStartedUTC;
     }
@@ -84,7 +84,7 @@ public class ScanErrorItemDto
     public DateTime FileLastModificationUTC { get; set; }
 
     /// <summary>
-    /// DateTime when the error occured
+    /// DateTime (UTC) when the error occured
     /// </summary>
     public DateTime ErrorOccurrence { get; set; }
 

@@ -365,4 +365,74 @@ public class CheckServiceTest : IDisposable
         Assert.Contains(items, i => i.FilenameAndPath == freshPath && i.FileSha512Hash == Sha512Hex(freshContent));
         Assert.DoesNotContain(items, i => i.FilenameAndPath == ghostPath);
     }
+
+    [Fact]
+    public void EmptyReportPath_WritesTheReportNextToTheDatabaseFile()
+    {
+        var content = new byte[] { 1, 2, 3 };
+        var mtime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var filePath = CreateFile("a.dat", content, mtime);
+        SeedDb(filePath, EnsureBasePathTrailingSep(_basePath), content, mtime);
+        CreateFile("new.dat", new byte[] { 9 }, mtime);
+
+        var job = BuildJob();
+        job.ScanJobDTO.ReportPath = string.Empty;
+        MyDupFinderCheckJobDTO.FixDto(job);
+        using (var service = _serviceProvider.GetRequiredService<CheckService>())
+        {
+            service.StartCheck(job);
+        }
+
+        Assert.Single(Directory.GetFiles(_tempDir, "check-*.csv"));
+        Assert.Empty(Directory.GetFiles(_reportDir, "check-*.csv"));
+    }
+
+    [Fact]
+    public void BuildReportPath_WithEmptyReportPathAndBareDatabaseName_UsesTheFolderOfTheDatabase()
+    {
+        var scanJob = new MyDupFinderScanJobDTO { JobName = "j", DatabaseFile = "test.db", ReportPath = string.Empty };
+        string path = CheckRunner.BuildReportPath(scanJob);
+        Assert.Equal(Path.GetFullPath(Environment.CurrentDirectory), Path.GetDirectoryName(Path.GetFullPath(path)));
+        Assert.StartsWith("check-j-", Path.GetFileName(path), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EmptyReportPath_WithRelativeDatabaseFile_WritesTheReportNextToTheDatabase()
+    {
+        var content = new byte[] { 1, 2, 3 };
+        var mtime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var filePath = CreateFile("a.dat", content, mtime);
+        SeedDb(filePath, EnsureBasePathTrailingSep(_basePath), content, mtime);
+
+        var job = BuildJob();
+        job.ScanJobDTO.ReportPath = string.Empty;
+        job.ScanJobDTO.DatabaseFile = Path.GetRelativePath(Environment.CurrentDirectory, _dbPath);
+        using (var service = _serviceProvider.GetRequiredService<CheckService>())
+        {
+            service.StartCheck(job);
+        }
+
+        Assert.Single(Directory.GetFiles(_tempDir, "check-*.csv"));
+    }
+
+    [Fact]
+    public void ReportHeader_StoresTheDatabaseFileAsAbsolutePath_WhenTheJobGivesARelativeOne()
+    {
+        var content = new byte[] { 1, 2, 3 };
+        var mtime = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var filePath = CreateFile("a.dat", content, mtime);
+        SeedDb(filePath, EnsureBasePathTrailingSep(_basePath), content, mtime);
+
+        var job = BuildJob();
+        // Relative to the current directory (without changing it: other tests run in parallel)
+        job.ScanJobDTO.DatabaseFile = Path.GetRelativePath(Environment.CurrentDirectory, _dbPath);
+        using (var service = _serviceProvider.GetRequiredService<CheckService>())
+        {
+            service.StartCheck(job);
+        }
+
+        var (header, _) = CheckReportCsv.Read(Directory.GetFiles(_reportDir, "check-*.csv").Single());
+        Assert.True(Path.IsPathRooted(header.DatabaseFile));
+        Assert.Equal(Path.GetFullPath(_dbPath), header.DatabaseFile);
+    }
 }

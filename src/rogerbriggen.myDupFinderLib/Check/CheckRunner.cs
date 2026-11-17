@@ -161,14 +161,13 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             CheckJobDTO.IgnoreBasePath);
 
         var reportPath = BuildReportPath(scanJob);
-        ReportFilePath = reportPath;
-        Directory.CreateDirectory(Path.GetDirectoryName(reportPath) ?? ".");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath)) ?? ".");
 
-        using var writer = new StreamWriter(reportPath, append: false);
+        using var writer = CreateReportWriter(reportPath);
         CheckReportCsv.WriteHeader(writer, new CheckReportHeader
         {
             SchemaVersion = CheckReportHeader.CurrentSchemaVersion,
-            DatabaseFile = scanJob.DatabaseFile,
+            DatabaseFile = Path.GetFullPath(scanJob.DatabaseFile),
             BasePath = basePath,
             JobName = scanJob.JobName,
             OriginComputer = scanJob.OriginComputer,
@@ -334,7 +333,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         {
             _logger.LogWarning("Check: {count} directories could not be read completely. {kept} database rows below them were NOT reported as missing (their files were not checked at all). Directories: {directories}", UnreadableDirectories.Count, UnreadableProtectedCount, UnreadableDirectoryLog.Join(UnreadableDirectories));
         }
-        _logger.LogInformation("Check finished. Report={report} {summary}", reportPath, BuildSummary());
+        _logger.LogInformation("Check finished. Report={report} {summary}", ReportFilePath, BuildSummary());
         Throughput.LogSummary("Check finished");
     }
 
@@ -381,6 +380,11 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
             // No DB row at all => new on disk. Compute hash so applyCheck can insert without re-reading.
             FileHashResult? newHashed = CheckJobDTO.SkipHashCheck ? null : ComputeHashOrNull(currentFile);
             string? newHash = newHashed?.Hash;
+            if (newHashed is null && !CheckJobDTO.SkipHashCheck)
+            {
+                // Hashing was attempted and failed (ComputeHashOrNull logged it): the row is still reported, without hash
+                ErrorCount++;
+            }
             var row = new CheckReportRow
             {
                 Category = CheckCategory.NewOnDisk,
@@ -557,10 +561,43 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
         }
     }
 
-    private static string BuildReportPath(MyDupFinderScanJobDTO scanJob)
+    /// <summary>
+    /// Highest number of report files with the same name (<c>-2</c> ... <c>-N</c> suffix) that are tried before the check fails.
+    /// </summary>
+    private const int MaxReportNameAttempts = 1000;
+
+    /// <summary>
+    /// Creates the report file exclusively (an existing file is never overwritten). When the name is taken (two checks of the same job in the same second),
+    /// <c>-2</c>, <c>-3</c> ... is added before the extension. <see cref="ReportFilePath"/> is the name that was used.
+    /// </summary>
+    internal StreamWriter CreateReportWriter(string reportPath)
+    {
+        string withoutExtension = Path.Combine(Path.GetDirectoryName(reportPath) ?? ".", Path.GetFileNameWithoutExtension(reportPath));
+        string extension = Path.GetExtension(reportPath);
+        for (int attempt = 1; attempt <= MaxReportNameAttempts; attempt++)
+        {
+            string candidate = attempt == 1 ? reportPath : string.Create(CultureInfo.InvariantCulture, $"{withoutExtension}-{attempt}{extension}");
+            FileStream stream;
+            try
+            {
+                stream = new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            }
+            catch (IOException) when (File.Exists(candidate))
+            {
+                // Already exists (not any other IO error): try the next name
+                continue;
+            }
+            ReportFilePath = candidate;
+            // Same encoding as StreamWriter(path): UTF-8 without BOM
+            return new StreamWriter(stream);
+        }
+        throw new IOException($"Could not create a report file: {reportPath} and the names with suffix -2 to -{MaxReportNameAttempts} all exist.");
+    }
+
+    internal static string BuildReportPath(MyDupFinderScanJobDTO scanJob)
     {
         var folder = string.IsNullOrWhiteSpace(scanJob.ReportPath)
-            ? Path.GetDirectoryName(scanJob.DatabaseFile) ?? "."
+            ? Path.GetDirectoryName(Path.GetFullPath(scanJob.DatabaseFile)) ?? "."
             : scanJob.ReportPath;
         var safeJobName = string.Concat(scanJob.JobName.Split(Path.GetInvalidFileNameChars()));
         var fileName = string.Format(CultureInfo.InvariantCulture, "check-{0}-{1:yyyyMMdd-HHmmss}.csv", safeJobName, DateTime.UtcNow);

@@ -546,4 +546,52 @@ public class CheckRowsPerPathTest : IDisposable
         Assert.Equal(s_t0.ToString("o", System.Globalization.CultureInfo.InvariantCulture), mtimeDisk);
         Assert.Equal(mtimeDisk, mtimeDb);
     }
+
+    // ---- report file names and hash errors of new files ----
+
+    [Fact]
+    public void ReportFile_IsNeverOverwritten_ASuffixIsAdded()
+    {
+        var log = new ListLoggerProvider();
+        using var serviceProvider = PipelineTestSupport.BuildServices(log, LogLevel.Trace);
+        using var runner = new CheckRunner(Job(), serviceProvider.GetService<ILogger<CheckRunner>>(), serviceProvider, null);
+        string taken = Path.Combine(_reportDir, "check-x-20260101-000000.csv");
+        File.WriteAllText(taken, "old");
+
+        using (var writer = runner.CreateReportWriter(taken))
+        {
+            writer.Write("new");
+        }
+        string second = Path.Combine(_reportDir, "check-x-20260101-000000-2.csv");
+        Assert.Equal(second, runner.ReportFilePath);
+        using (var writer = runner.CreateReportWriter(taken))
+        {
+            writer.Write("new");
+        }
+        Assert.Equal(Path.Combine(_reportDir, "check-x-20260101-000000-3.csv"), runner.ReportFilePath);
+
+        Assert.Equal("old", File.ReadAllText(taken));
+        Assert.Equal("new", File.ReadAllText(second));
+        // No byte order mark
+        Assert.Equal((byte)'n', File.ReadAllBytes(second)[0]);
+    }
+
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public void NewFileThatCannotBeHashed_IsReportedAndCountedAsError(bool skipHash, int expectedErrors)
+    {
+        // The file is in the listing but does not exist: it has no row (NewOnDisk) and hashing fails
+        string file = P("new-unreadable.bin");
+        RowsPerPathSupport.Insert(_dbPath, Row(P("other.bin"), "H1", 10, s_t0, s_t0));
+        var source = new FakeFileEnumerationSource();
+        source.Files.Add(FakeFileEnumerationSource.Entry(file, 10, s_t0));
+
+        var (runner, rows, _, _) = RunCheck(Job(skipHash: skipHash, trust: true), source);
+
+        Assert.Equal(expectedErrors, runner.ErrorCount);
+        Assert.Equal(1, runner.NewOnDiskCount);
+        var newRow = Assert.Single(rows, r => r.Category == CheckCategory.NewOnDisk);
+        Assert.Null(newRow.HashDisk);
+    }
 }

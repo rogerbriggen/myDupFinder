@@ -299,7 +299,7 @@ Every file on disk is classified into one of these categories:
 - **NewOnDisk** — there is a file on disk that has no row in the database yet.
 
 `Ok` files (everything matches) are not written to the report.
-The report file is `check-{JobName}-{timestamp}.csv` under the job's `ReportPath`. It is RFC 4180–quoted, includes the freshly computed disk hashes, and starts with a self-contained `# Key=Value` header so `applyCheck` knows which database to update without needing the project file again.
+The report file is `check-{JobName}-{timestamp}.csv` under the job's `ReportPath`. It is RFC 4180–quoted, includes the freshly computed disk hashes, and starts with a self-contained `# Key=Value` header so `applyCheck` knows which database to update without needing the project file again. The `DatabaseFile` in the header is stored as an absolute path, so `applyCheck` also works from another working directory. If `ReportPath` is empty or left out, the report is written next to the database file. A report is never overwritten: if the name is already taken (two checks of the same job in the same second), `-2`, `-3` and so on is added before `.csv`. A new file (`NewOnDisk`) that cannot be read is still reported (without hash) and counts as an error in the summary.
 
 Two flags tune behavior:
 

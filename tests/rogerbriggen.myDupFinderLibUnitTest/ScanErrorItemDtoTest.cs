@@ -80,4 +80,15 @@ public class ScanErrorItemDtoTest
         var errorItem = new ScanErrorItemDto();
         Assert.Equal(string.Empty, errorItem.MyException);
     }
+
+    [Fact]
+    public void Constructor_ShouldSetErrorOccurrenceToUtcNow()
+    {
+        var before = DateTime.UtcNow;
+        var errorItem = new ScanErrorItemDto(new ScanItemDto { FilenameAndPath = "file.txt" }, new Exception("x"), before);
+        var after = DateTime.UtcNow;
+
+        Assert.Equal(DateTimeKind.Utc, errorItem.ErrorOccurrence.Kind);
+        Assert.InRange(errorItem.ErrorOccurrence, before, after);
+    }
 }
