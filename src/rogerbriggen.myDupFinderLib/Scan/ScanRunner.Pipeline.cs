@@ -80,12 +80,8 @@ internal partial class ScanRunner
     {
         int workers = ScanJobDTO.HashWorkers;
         //Don't filter if db is empty... (same decision as the sequential scan, made before any other thread starts)
+        //Otherwise always look up every file. There is no base path shortcut: base paths can nest or overlap, so a base path without rows of its own can still contain scanned files.
         bool bFilter = !ScanJobDBInserts.IsEmptyScanItemTable();
-        if (bFilter)
-        {
-            //Check if there is at least one item from this base path... if no, we don't filter
-            bFilter = ScanJobDBInserts.IsBasePathAlreadyInDB(ScanJobDTO.BasePath);
-        }
 
         int workCapacity = workers * QueueCapacityPerWorker;
         int resultCapacity = workers * QueueCapacityPerWorker;
