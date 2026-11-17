@@ -60,7 +60,7 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
         base.Start(token);
 
         //Setup DB
-        ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile);
+        ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile, ScanJobDTO.DatabaseSynchronous);
         _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
         Throughput = new ThroughputTracker(_logger);
         try

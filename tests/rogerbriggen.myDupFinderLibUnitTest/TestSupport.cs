@@ -42,6 +42,14 @@ internal sealed class ListLoggerProvider : ILoggerProvider
         }
     }
 
+    public void Clear()
+    {
+        lock (_entries)
+        {
+            _entries.Clear();
+        }
+    }
+
     public ILogger CreateLogger(string categoryName) => new ListLogger(this);
 
     public void Dispose()

@@ -82,7 +82,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
         base.Start(token);
 
         //Setup DB
-        ScanJobDBInserts.SetupDB(RefreshJobDTO.DatabaseFile);
+        ScanJobDBInserts.SetupDB(RefreshJobDTO.DatabaseFile, RefreshJobDTO.DatabaseSynchronous);
         _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
         Throughput = new ThroughputTracker(_logger);
         Refresh();

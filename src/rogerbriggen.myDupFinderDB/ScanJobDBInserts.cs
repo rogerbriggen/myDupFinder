@@ -78,6 +78,7 @@ public class ScanJobDBInserts : IDisposable
     private readonly int _batchSize;
     private readonly TimeSpan _flushInterval;
     private readonly TimeProvider _timeProvider;
+    private readonly Func<string, bool> _isNetworkLocation;
     private long _lastFlushTimestamp;
     private readonly object dbContextLock = new object();
     private readonly ILogger<ScanJobDBInserts> _logger;
@@ -99,9 +100,11 @@ public class ScanJobDBInserts : IDisposable
     /// <param name="batchSize">Number of pending operations that triggers a flush (default 500).</param>
     /// <param name="flushInterval">Time since the last flush after which the next added operation triggers a flush (default 5 seconds). There is no timer: this is only checked when an operation is added.</param>
     /// <param name="timeProvider">Clock, for tests. Default is <see cref="TimeProvider.System"/>.</param>
-    public ScanJobDBInserts(ILogger<ScanJobDBInserts>? logger, int batchSize = DefaultBatchSize, TimeSpan? flushInterval = null, TimeProvider? timeProvider = null)
+    /// <param name="isNetworkLocation">Decides whether a database file (full path) lies on a network location. Default: <see cref="DatabaseLocation.IsNetworkLocation"/>. For tests.</param>
+    public ScanJobDBInserts(ILogger<ScanJobDBInserts>? logger, int batchSize = DefaultBatchSize, TimeSpan? flushInterval = null, TimeProvider? timeProvider = null, Func<string, bool>? isNetworkLocation = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        _isNetworkLocation = isNetworkLocation ?? DatabaseLocation.IsNetworkLocation;
         _logger = logger ?? NullLoggerFactory.Instance.CreateLogger<ScanJobDBInserts>();
         _batchSize = batchSize;
         _flushInterval = flushInterval ?? DefaultFlushInterval;
@@ -142,14 +145,37 @@ public class ScanJobDBInserts : IDisposable
         }
     }
 
-    public void SetupDB(string databaseFile)
+    /// <summary>The synchronous value that is really used on the connections of this object (after <see cref="SetupDB"/>): the requested value, or Full if Normal had to be ignored.</summary>
+    public DatabaseSynchronous EffectiveSynchronous => _connectionSettings?.Synchronous ?? DatabaseSynchronous.Full;
+
+    private DatabaseConnectionSettings? _connectionSettings;
+
+    /// <summary>
+    /// Opens (and creates and migrates, if needed) the database.
+    /// </summary>
+    /// <param name="databaseFile">The database file.</param>
+    /// <param name="synchronous">
+    /// The requested <c>PRAGMA synchronous</c> value (job setting <c>DatabaseSynchronous</c>). <see cref="DatabaseSynchronous.Normal"/> is only applied when the database is in WAL mode and
+    /// not on a network location, otherwise it is ignored with a Warning. The value is set on every connection that EF Core opens, before any command or transaction.
+    /// </param>
+    public void SetupDB(string databaseFile, DatabaseSynchronous synchronous = DatabaseSynchronous.Full)
     {
         lock (dbContextLock)
         {
             databaseFile = DatabaseLocation.PrepareDatabaseFile(databaseFile);
-            _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile);
+            bool existed = File.Exists(databaseFile) && new FileInfo(databaseFile).Length > 0;
+            bool network = _isNetworkLocation(databaseFile);
+            if (!existed && network)
+            {
+                // EF Core switches a database to WAL only when it creates the file itself, so create the file first, in rollback-journal mode
+                DatabaseLocation.CreateEmptyRollbackJournalFile(databaseFile);
+            }
+            // Full until the journal mode is known: the migration runs with the safe value
+            _connectionSettings = new DatabaseConnectionSettings();
+            _dbContextOptions = DubFinderContextFactory.GetDbContextOptions(databaseFile, _connectionSettings);
             _dbContext = new DubFinderContext(_dbContextOptions);
             DatabaseMigrator.Migrate(_dbContext, _logger, databaseFile);
+            DatabaseModePolicy.Apply(_dbContext, _connectionSettings, synchronous, existed, network, databaseFile, _logger);
             _dbContext.ChangeTracker.AutoDetectChangesEnabled = false;
             TotalSuccessCount = 0;
             TotalErrorCount = 0;
@@ -173,7 +199,8 @@ public class ScanJobDBInserts : IDisposable
             bool wasClosed = connection.State != ConnectionState.Open;
             if (wasClosed)
             {
-                connection.Open();
+                // Through EF (not connection.Open()), so the connection settings are applied and the synchronous value that is read is the one the commands really use
+                _dbContext.Database.OpenConnection();
             }
             try
             {
@@ -196,7 +223,7 @@ public class ScanJobDBInserts : IDisposable
             {
                 if (wasClosed)
                 {
-                    connection.Close();
+                    _dbContext.Database.CloseConnection();
                 }
             }
         }

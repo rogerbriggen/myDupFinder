@@ -89,7 +89,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     {
         base.Start(token);
 
-        DbInserts.SetupDB(CheckJobDTO.ScanJobDTO.DatabaseFile);
+        DbInserts.SetupDB(CheckJobDTO.ScanJobDTO.DatabaseFile, CheckJobDTO.ScanJobDTO.DatabaseSynchronous);
         _logger.LogInformation("Database state: {diagnostics}", DbInserts.GetDatabaseDiagnostics());
         Throughput = new ThroughputTracker(_logger);
         try
