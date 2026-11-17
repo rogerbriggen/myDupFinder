@@ -1086,6 +1086,69 @@ public class ScanJobDBInserts : IDisposable
         }
     }
 
+    /// <summary>
+    /// Reads the recorded volume identity of a base path (no tracking), or null if none was recorded.
+    /// </summary>
+    public ScanVolumeDto? GetScanVolume(string originComputer, string scanName, string basePath)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("GetScanVolume called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            return _dbContext.Set<ScanVolumeDto>().AsNoTracking().FirstOrDefault(v => v.OriginComputer == originComputer && v.ScanName == scanName && v.BasePath == basePath);
+        }
+    }
+
+    /// <summary>
+    /// Records the volume identity of a base path: inserts the row or updates it, and writes it at once (its own SaveChanges, not the pending queue).
+    /// <c>LastVerifiedUTC</c> is always set to <paramref name="utcNow"/>; <c>FirstRecordedUTC</c> is kept unless the identity changed, then it is reset.
+    /// </summary>
+    public void SaveScanVolume(string originComputer, string scanName, string basePath, string volumeIdentity, DateTime utcNow)
+    {
+        if (_dbContext is null)
+        {
+            throw new InvalidOperationException("SaveScanVolume called without SetupDB!");
+        }
+        lock (dbContextLock)
+        {
+            // AutoDetectChanges is off: the entity is tracked explicitly and the tracker is emptied again, so the batch writer starts clean
+            ScanVolumeDto? existing = _dbContext.Set<ScanVolumeDto>().AsNoTracking().FirstOrDefault(v => v.OriginComputer == originComputer && v.ScanName == scanName && v.BasePath == basePath);
+            try
+            {
+                if (existing is null)
+                {
+                    _dbContext.Add(new ScanVolumeDto
+                    {
+                        Id = Guid.NewGuid(),
+                        OriginComputer = originComputer,
+                        ScanName = scanName,
+                        BasePath = basePath,
+                        VolumeIdentity = volumeIdentity,
+                        FirstRecordedUTC = utcNow,
+                        LastVerifiedUTC = utcNow,
+                    });
+                }
+                else
+                {
+                    if (!string.Equals(existing.VolumeIdentity, volumeIdentity, StringComparison.Ordinal))
+                    {
+                        existing.VolumeIdentity = volumeIdentity;
+                        existing.FirstRecordedUTC = utcNow;
+                    }
+                    existing.LastVerifiedUTC = utcNow;
+                    _dbContext.Update(existing);
+                }
+                _dbContext.SaveChanges();
+            }
+            finally
+            {
+                _dbContext.ChangeTracker.Clear();
+            }
+        }
+    }
+
     protected virtual void Dispose(bool disposing)
     {
         if (!_disposedValue)

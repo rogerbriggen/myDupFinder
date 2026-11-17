@@ -113,6 +113,7 @@ The application is configured through an XML project file. You can generate an e
       <TrustDirectoryMetadata>false</TrustDirectoryMetadata>
       <HashWorkers>1</HashWorkers>
       <DatabaseSynchronous>Full</DatabaseSynchronous>
+      <AcceptVolumeChange>false</AcceptVolumeChange>
     </MyDupFinderScanJobDTO>
   </MyDupFinderScanJobDTOs>
 
@@ -129,6 +130,7 @@ The application is configured through an XML project file. You can generate an e
         <ThrottlePercent>0</ThrottlePercent>
         <TrustDirectoryMetadata>false</TrustDirectoryMetadata>
         <DatabaseSynchronous>Full</DatabaseSynchronous>
+        <AcceptVolumeChange>false</AcceptVolumeChange>
       </ScanJobDTO>
       <IgnoreBasePath>false</IgnoreBasePath>
       <SkipHashCheck>true</SkipHashCheck>
@@ -157,6 +159,7 @@ The application is configured through an XML project file. You can generate an e
       <ReportPath>m:\finddupdb\</ReportPath>
       <ThrottlePercent>0</ThrottlePercent>
       <TrustDirectoryMetadata>false</TrustDirectoryMetadata>
+      <AcceptVolumeChange>false</AcceptVolumeChange>
     </MyDupFinderRefreshJobDTO>
   </MyDupFinderRefreshJobDTOs>
 
@@ -283,6 +286,25 @@ The refresh is smart and fast:
 ### Resuming a scan
 
 A scan into a database that already has rows skips what is already scanned. Every file is looked up, also when the base path itself has no rows (for example a parent of a base path that was scanned before); only a scan into an empty database does no lookup. The identity is the **path plus the computer that scanned it** (`ScanExecutionComputer`; ScanName, OriginComputer and PathBase are not part of it, a row of another computer is left alone and the file is inserted for this one). A file counts as **already scanned** when a row has the same size AND the same last write time as the file now (from the file itself, or from the directory listing with `TrustDirectoryMetadata`); it is then not opened. If rows exist for the path but none matches, the file **changed**: it is hashed and ONE existing row (the latest `LastScanDateUTC`, then the highest Id) is updated in place (size, last write time, hash, both scan dates), other rows of the path are removed; no row is added. If hashing fails, the rows are left untouched and an error item is stored. A path without rows is inserted. Surplus rows next to a matching row are removed as well, without hashing. **Only rows with the job's `OriginComputer` and `ScanName` are ever updated or removed.** A row of another scan (same path, same scanning computer, other `OriginComputer` or `ScanName`) still counts as "already scanned" when it has the same size and last write time (as before), but if the file changed and only rows of other scans exist for the path, a new row is inserted for this job and the other rows are left alone; stale rows of this job next to a matching row of another scan are left alone as well. The summary line shows `SuccessCount` (inserted and updated rows, a removed row counts nothing), `UpdatedExistingRows` and `RemovedSurplusRows`.
+
+### Volume identity check
+
+An unmounted disk (the mount point or drive letter is now an empty directory) or a different disk at the same drive letter or mount point must not look like "all files are gone": a refresh would then erase the baseline. So scan, refresh and check compare the volume the `BasePath` lies on with the volume that was recorded for it.
+
+- **What is recorded.** The `ScanVolumes` table of the database holds one row per `OriginComputer`, `ScanName` and `BasePath` (the base path with its trailing delimiter, the same string the rows use as `PathBase`): the identity of the volume, when it was first recorded and when it was last verified. A database created by an older version gets the (empty) table automatically when it is opened; its rows are not touched.
+- **Where the identity comes from.**
+  - Windows: the volume GUID of the mount root (`win-volume:\\?\Volume{...}\`, mounted folders are handled). Network shares, mapped drives and SUBST drives have none; for them the volume serial number and file system name are used (`win-serial:XXXXXXXX:NTFS`).
+  - Linux: the UUID of the file system mounted at the mount root (`linux-uuid:...`) when `/dev/disk/by-uuid` lists it, otherwise the mount root, file system type and mount source from `/proc/self/mountinfo` (`mount:/mnt/x|ext4|/dev/sdb1`, `mount:/mnt/n|nfs4|server:/export`, `mount:/tank|zfs|pool/dataset`).
+  - Other systems (macOS and so on): `mount:<mount root>|<file system type>`.
+  - A base path that is a symbolic link, a junction, or lies below one is followed to the real volume first (Unix: `realpath`; Windows: the final path name of the opened directory), so a link to an unmounted disk is detected.
+- **Limits.** The `mount:<root>|<type>` form (macOS, or Linux without a known mount source) detects an unmounted volume (the base path then lies on the parent file system, which has another mount root), but not a different disk with the same file system type at the same mount point; with the mount source (Linux) a different device is detected too. A `win-serial` identity changes when the volume is reformatted. A volume GUID changes when the volume is recreated or cloned to a new partition (that counts as a different volume, see `AcceptVolumeChange`).
+- **Policy.**
+  - The base path does not exist: the job **fails and writes nothing**. (Refresh, scan and check all do this; a missing base path already failed a refresh before.)
+  - Nothing recorded yet (an old database, or the first run): the identity is recorded and the job runs, with a Warning that this run could not be verified (only an Information message for a base path that has no rows yet). Check never records anything: it only warns. The first run on an old database cannot detect a volume that is already unmounted, so run that first refresh while the disk is mounted.
+  - Recorded and equal: the job runs, scan and refresh update the "last verified" time.
+  - Recorded and different, or the identity cannot be determined on this system while one is recorded: scan and refresh **fail and write nothing** (no rows added, updated, touched or removed, no scan started); check fails and writes **no report**, so `applyCheck` can never act on a report full of `MissingOnDisk` rows. The error names the recorded and the current identity and the base path.
+  - The identity cannot be determined and nothing is recorded: the job runs with a Warning, nothing is recorded.
+- **`AcceptVolumeChange`** (scan, refresh and the scan part of check jobs): `false` (default, also when the element is missing in the project file) or `true`. If the volume really changed on purpose (a disk that was cloned, replaced or reformatted), set it to `true` on the scan or refresh job for **one run**: the job logs a Warning, records the new identity and runs. Set it back to `false` afterwards. A check job refuses on a changed volume as well; run a refresh or scan with `AcceptVolumeChange` first (a check with `AcceptVolumeChange` runs, but records nothing).
 
 ### Check Jobs
 

@@ -134,6 +134,42 @@ namespace RogerBriggen.myDupFinderDB.Migrations
 
                     b.ToTable("ScanItems");
                 });
+
+            modelBuilder.Entity("RogerBriggen.MyDupFinderData.ScanVolumeDto", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("BasePath")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("FirstRecordedUTC")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("LastVerifiedUTC")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("OriginComputer")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ScanName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("VolumeIdentity")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OriginComputer", "ScanName", "BasePath")
+                        .IsUnique();
+
+                    b.ToTable("ScanVolumes");
+                });
 #pragma warning restore 612, 618
         }
     }
