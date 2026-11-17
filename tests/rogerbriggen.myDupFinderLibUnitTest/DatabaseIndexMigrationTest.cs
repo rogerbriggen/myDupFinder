@@ -341,7 +341,6 @@ public class DatabaseIndexMigrationTest : IDisposable
         {
             ("IsEmptyScanItemTable", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.IsEmptyScanItemTable(c))),
             ("LookupForResume", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.GetResumeCandidates(c, si.FilenameAndPath, si.ScanExecutionComputer))),
-            ("IsBasePathAlreadyInDB", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.IsBasePathAlreadyInDB(c, BasePath))),
             ("GetAllItemsByBasePath", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.GetAllItemsByBasePath(c, BasePath))),
             ("GetAllItemsByScanIdentity", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.GetAllItemsByScanIdentity(c, "TestPC", "TestScan"))),
             ("GetItemByPath", QueryPlanHelper.Describe(path, c => ScanJobDBInserts.GetItemByPath(c, BasePath + "a.txt"))),

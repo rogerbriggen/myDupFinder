@@ -588,8 +588,6 @@ public class ScanJobDBInserts : IDisposable
         return new ResumeLookup(PrimaryRowChooser.Matches(primary, fileSize, fileLastWriteTimeUtc) ? ResumeLookupKind.AlreadyScanned : ResumeLookupKind.Changed, primary.Id, surplus);
     }
 
-    internal static bool IsBasePathAlreadyInDB(DubFinderContext context, string basePath) => context.Set<ScanItemDto>().Any(s => s.PathBase == basePath);
-
     internal static List<ScanItemDto> GetAllItemsByBasePath(DubFinderContext context, string basePath) => context.Set<ScanItemDto>().AsNoTracking().Where(s => s.PathBase == basePath).ToList();
 
     internal static List<ScanItemDto> GetAllItemsByScanIdentity(DubFinderContext context, string originComputer, string scanName) =>
@@ -628,20 +626,6 @@ public class ScanJobDBInserts : IDisposable
             var rows = GetResumeCandidates(_dbContext, si.FilenameAndPath, si.ScanExecutionComputer);
             return DecideResume(rows, si.FileSize, si.FileLastModificationUTC, si.OriginComputer, si.ScanName);
         }
-    }
-
-    public bool IsBasePathAlreadyInDB(string basePath)
-    {
-        if (_dbContext is null)
-        {
-            throw new InvalidOperationException("IsBasePathAlreadyInDB called without SetupDB!");
-        }
-        lock (dbContextLock)
-        {
-            //true if there are already some in the database
-            return IsBasePathAlreadyInDB(_dbContext, basePath);
-        }
-
     }
 
     /// <summary>

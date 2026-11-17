@@ -17,7 +17,8 @@ using Xunit;
 namespace RogerBriggen.MyDupFinderLibUnitTest;
 
 /// <summary>
-/// The resume filter (one IsAlreadyInDB query per file) must only run when the database already has rows of this base path.
+/// The resume filter (one lookup per file) must run whenever the database already has rows, whatever their base path (base paths can nest),
+/// and must not run when the database is empty.
 /// Observed with the counter ResumeLookupCount of ScanJobDBInserts, which the test passes to the runner.
 /// </summary>
 public class ScanResumeLookupTest : IDisposable
@@ -106,7 +107,7 @@ public class ScanResumeLookupTest : IDisposable
     }
 
     [Fact]
-    public void ScanOfABasePathThatIsNotInTheDatabaseYet_DoesNoResumeLookup()
+    public void ScanOfAnotherBasePathIntoANonEmptyDatabase_DoesOneResumeLookupPerFile()
     {
         string treeA = MakeTree("treeA");
         string treeB = MakeTree("treeB");
@@ -114,7 +115,7 @@ public class ScanResumeLookupTest : IDisposable
 
         int lookups = Scan(treeB);
 
-        Assert.Equal(0, lookups);
+        Assert.Equal(FileCount, lookups);
         Assert.Equal(2 * FileCount, RowCount());
     }
 
@@ -144,7 +145,7 @@ public class ScanResumeLookupTest : IDisposable
     }
 
     [Fact]
-    public void Pipeline_ScanOfABasePathThatIsNotInTheDatabaseYet_DoesNoResumeLookup()
+    public void Pipeline_ScanOfAnotherBasePathIntoANonEmptyDatabase_DoesOneResumeLookupPerFile()
     {
         string treeA = MakeTree("treeA");
         string treeB = MakeTree("treeB");
@@ -152,7 +153,7 @@ public class ScanResumeLookupTest : IDisposable
 
         int lookups = Scan(treeB, hashWorkers: 4);
 
-        Assert.Equal(0, lookups);
+        Assert.Equal(FileCount, lookups);
         Assert.Equal(2 * FileCount, RowCount());
     }
 
@@ -166,6 +167,35 @@ public class ScanResumeLookupTest : IDisposable
 
         Assert.Equal(FileCount, lookups);
         Assert.Equal(FileCount, RowCount());
+    }
+
+    // ---- nested base paths: the files under the first base path are found again by the scan of its parent ----
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(4)]
+    public void ScanOfTheParentOfAScannedBasePath_DoesOneResumeLookupPerFile_AndAddsNoSecondRow(int hashWorkers)
+    {
+        // The database (_tempDir/db) and the reports (_tempDir) are outside of the parent, so only the generated files are scanned
+        string parent = Path.Combine(_tempDir, "parent");
+        string sub = Path.Combine(parent, "sub");
+        TestTreeGenerator.Generate(sub, new TestTreeOptions
+        {
+            FileCount = FileCount,
+            DuplicateShare = 0,
+            DirectoryCount = 2,
+            SizeBuckets = new[] { new SizeBucket(1.0, 64, 300) },
+        });
+        Assert.Equal(0, Scan(sub, hashWorkers));
+        Assert.Equal(FileCount, RowCount());
+
+        // No row has the PathBase of the parent, but the files under sub are already scanned
+        int lookups = Scan(parent, hashWorkers);
+
+        Assert.Equal(FileCount, lookups);
+        Assert.Equal(FileCount, RowCount());
+        using var context = DubFinderContextFactory.CreateDubFinderContext(_dbPath);
+        Assert.DoesNotContain(context.ScanItems!.AsNoTracking().AsEnumerable().GroupBy(i => i.FilenameAndPath), g => g.Count() > 1);
     }
 
     // ---- changed files: still one lookup per file, and the rows are updated, not added ----

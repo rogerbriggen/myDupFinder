@@ -127,13 +127,9 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
         //No throttling when ThrottlePercent is 0
         DiscThrottle? discThrottle = DiscThrottle.CreateForJob(ScanJobDTO.ThrottlePercent);
         bool bFinish = false;
-        //Don't filter if db is empty...
+        //Don't filter if db is empty... Otherwise always look up every file. There is no base path shortcut: base paths can nest or overlap
+        //(rows of C:\data\sub, now scanning C:\data), so a base path without rows of its own can still contain files that are already scanned.
         bool bFilter = !ScanJobDBInserts.IsEmptyScanItemTable();
-        if (bFilter)
-        {
-            //Check if there is at least one item from this base path... if no, we don't filter
-            bFilter = ScanJobDBInserts.IsBasePathAlreadyInDB(ScanJobDTO.BasePath);
-        }
         try
         {
             while (!bFinish)
