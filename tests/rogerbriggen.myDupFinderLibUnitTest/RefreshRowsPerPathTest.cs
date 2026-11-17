@@ -67,7 +67,7 @@ public class RefreshRowsPerPathTest : IDisposable
 
     private ScanItemDto Row(string path, string hash, long size, DateTime mtime, DateTime lastScan) => RowsPerPathSupport.Row(path, _base, hash, size, mtime, lastScan);
 
-    private (RefreshRunner Runner, ConcurrentBag<string> Opens, ListLoggerProvider Log) RunRefresh(FakeFileEnumerationSource? source = null, bool trust = false)
+    private (RefreshRunner Runner, ConcurrentBag<string> Opens, ListLoggerProvider Log) RunRefresh(FakeFileEnumerationSource? source = null, bool trust = false, IService.EServiceState expectedState = IService.EServiceState.finished)
     {
         var opens = new ConcurrentBag<string>();
         var hasher = new FileHasher { BeforeOpen = p => opens.Add(p) };
@@ -86,7 +86,7 @@ public class RefreshRowsPerPathTest : IDisposable
         var runner = new RefreshRunner(job, serviceProvider.GetService<ILogger<RefreshRunner>>(), serviceProvider, null, source, hasher);
         runner.Start(CancellationToken.None);
         SqliteConnection.ClearAllPools();
-        Assert.Equal(IService.EServiceState.finished, runner.RunnerState);
+        Assert.Equal(expectedState, runner.RunnerState);
         return (runner, opens, log);
     }
 
@@ -299,7 +299,8 @@ public class RefreshRowsPerPathTest : IDisposable
         RowsPerPathSupport.Insert(_dbPath, Foreign(file, "FOREIGN", 100, s_t0, s_t0), Foreign(P("b.bin"), "FOREIGN2", 5, s_t0, s_t0));
         var before = RowsPerPathSupport.Fingerprints(RowsPerPathSupport.ReadRows(_dbPath));
 
-        var (runner, opens, log) = RunRefresh();
+        // The run did nothing and says so: failed, not finished
+        var (runner, opens, log) = RunRefresh(expectedState: IService.EServiceState.failed);
 
         Assert.Equal(before, RowsPerPathSupport.Fingerprints(RowsPerPathSupport.ReadRows(_dbPath)));
         Assert.Empty(opens);

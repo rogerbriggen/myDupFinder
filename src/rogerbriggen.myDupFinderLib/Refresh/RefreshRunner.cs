@@ -81,12 +81,38 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
     {
         base.Start(token);
 
-        //Setup DB
-        ScanJobDBInserts.SetupDB(RefreshJobDTO.DatabaseFile, RefreshJobDTO.DatabaseSynchronous);
-        _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
-        Throughput = new ThroughputTracker(_logger);
-        Refresh();
-        ScanJobDBInserts.Dispose();
+        try
+        {
+            //Setup DB
+            ScanJobDBInserts.SetupDB(RefreshJobDTO.DatabaseFile, RefreshJobDTO.DatabaseSynchronous);
+            _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
+            Throughput = new ThroughputTracker(_logger);
+            Refresh();
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            // The database could not be set up (Refresh() handles everything inside itself)
+            _logger.LogError(ex, "Refresh failed before or after the file loop.");
+            if (RunnerState == IService.EServiceState.running)
+            {
+                RunnerState = IService.EServiceState.failed;
+            }
+        }
+        finally
+        {
+            try
+            {
+                ScanJobDBInserts.Dispose();
+            }
+#pragma warning disable CA1031 // Do not catch general exception types
+            catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+            {
+                _logger.LogError(ex, "Releasing the database failed.");
+            }
+        }
     }
 
     private void Refresh()
@@ -110,7 +136,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                 var identities = existingItems.Select(i => $"{i.OriginComputer}/{i.ScanName}").Distinct(StringComparer.Ordinal).OrderBy(s => s, StringComparer.Ordinal);
                 _logger.LogError("Refresh: the database has {count} rows for base path {basePath}, but none belongs to this job's OriginComputer/ScanName ({origin}/{scan}). The identities that exist under this base path: {identities}. Nothing was changed. Fix OriginComputer and ScanName of the job.", existingItems.Count, RefreshJobDTO.BasePath, RefreshJobDTO.OriginComputer, RefreshJobDTO.ScanName, string.Join(", ", identities));
                 WriteChanges();
-                RunnerState = IService.EServiceState.finished;
+                RunnerState = IService.EServiceState.failed;
                 return;
             }
             // All rows of a path are kept (older versions of the scan could leave several rows for one path)
@@ -137,7 +163,7 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
                     // (Files that were handled before the failure are written, nothing is removed.)
                     _logger.LogError(ex, "Error enumerating files in {basePath}. No rows were removed.", RefreshJobDTO.BasePath);
                     WriteChanges();
-                    RunnerState = IService.EServiceState.finished;
+                    RunnerState = IService.EServiceState.failed;
                     return;
                 }
                 finally
@@ -336,14 +362,16 @@ internal class RefreshRunner : BasicRunner<RefreshRunner>, IRefreshRunner
         }
         catch (BatchWriteException ex)
         {
-            // Fatal: the database cannot be written. RunnerState is left as it is (running).
+            // Fatal: the database cannot be written. The run is failed.
             _logger.LogError(ex, "Refresh stopped because of a database write failure. {PendingCount} operations could not be written. Added={added} Updated={updated} Removed={removed} Unchanged={unchanged} Errors={errors} (counted when queued, not all of them are in the database).", ex.PendingOperationCount, AddedCount, UpdatedCount, RemovedCount, UnchangedCount, ErrorCount);
+            RunnerState = IService.EServiceState.failed;
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (Exception ex)
 #pragma warning restore CA1031 // Do not catch general exception types
         {
             _logger.LogError(ex, "Error in Refresh!");
+            RunnerState = IService.EServiceState.failed;
         }
     }
 

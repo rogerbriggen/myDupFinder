@@ -256,11 +256,37 @@ public class RunnerBatchingTest : IDisposable
         Assert.Equal(0, ReadErrorCount());
         // Whole batches only: a failed batch writes nothing
         Assert.Equal(0, rows.Count % 10);
-        Assert.NotEqual(IService.EServiceState.finished, runner.RunnerState);
-        Assert.NotEqual(IService.EServiceState.cancelled, runner.RunnerState);
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Contains(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("database write failure", StringComparison.Ordinal));
         Assert.DoesNotContain(log.Entries, e => e.Message.Contains("Hashing of", StringComparison.Ordinal));
         Assert.DoesNotContain(log.Entries, e => e.Message.StartsWith("Scanning finished", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Refresh_BatchWriteFailure_EndsAsFailed()
+    {
+        TestTreeGenerator.Generate(_treeDir, Tree(20));
+        RunScan();
+        for (int i = 0; i < 6; i++)
+        {
+            File.WriteAllBytes(Path.Combine(_treeDir, $"newfile{i}.bin"), Enumerable.Range(0, 100 + i).Select(b => (byte)(b + i)).ToArray());
+        }
+        File.WriteAllBytes(Path.Combine(_treeDir, "poisoned_new.bin"), Enumerable.Range(0, 99).Select(b => (byte)b).ToArray());
+        using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TRIGGER poison BEFORE INSERT ON ScanItems WHEN NEW.Filename = 'poisoned_new.bin' BEGIN SELECT RAISE(ABORT, 'poisoned'); END;";
+            command.ExecuteNonQuery();
+        }
+        SqliteConnection.ClearAllPools();
+        var log = new ListLoggerProvider();
+
+        var runner = RunRefresh(log, LogLevel.Information, batchSize: 3);
+
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
+        Assert.Contains(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("database write failure", StringComparison.Ordinal));
+        Assert.DoesNotContain(log.Entries, e => e.Message.StartsWith("Refresh finished.", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using RogerBriggen.MyDupFinderData;
 
 namespace RogerBriggen.MyDupFinderLib;
@@ -46,21 +47,69 @@ internal sealed class ReportAlreadyExistsException : IOException
     public string ReportFile { get; }
 }
 
-/// <summary>Writing failed after the report file was created by this run: a partial report file may have been left.</summary>
+/// <summary>
+/// Writing failed after the report file was created by this run. The partial file was renamed to <see cref="FailedFile"/> (see <see cref="DupReportWriter.FailedSuffix"/>)
+/// so that it does not block the next run; <see cref="FailedFile"/> is null when that rename failed too, then the partial file is still at <see cref="ReportFile"/>.
+/// </summary>
 internal sealed class ReportWriteFailedException : IOException
 {
-    public ReportWriteFailedException(string reportFile, Exception inner)
-        : base($"Writing the report file failed, a partial file may have been left: {reportFile}", inner) => ReportFile = reportFile;
+    public ReportWriteFailedException(string reportFile, string? failedFile, Exception inner)
+        : base(failedFile is null
+            ? $"Writing the report file failed, a partial file was left (it could not be renamed): {reportFile}"
+            : $"Writing the report file failed, the partial file was renamed to {failedFile}", inner)
+    {
+        ReportFile = reportFile;
+        FailedFile = failedFile;
+    }
 
     public string ReportFile { get; }
+
+    public string? FailedFile { get; }
+}
+
+/// <summary>
+/// The run was cancelled while the report was written, after the report file was created by this run. Like <see cref="ReportWriteFailedException"/>: the partial file is at
+/// <see cref="FailedFile"/> (null when the rename failed, then it is still at <see cref="ReportFile"/>).
+/// </summary>
+internal sealed class ReportWriteCancelledException : OperationCanceledException
+{
+    public ReportWriteCancelledException(string reportFile, string? failedFile, CancellationToken token)
+        : base($"The run was cancelled while the report file was written: {reportFile}", token)
+    {
+        ReportFile = reportFile;
+        FailedFile = failedFile;
+    }
+
+    public string ReportFile { get; }
+
+    public string? FailedFile { get; }
+}
+
+/// <summary>Log text that both find-dups runners use.</summary>
+internal static class FindDupsReportLog
+{
+    /// <summary>Says where the partial report is (renamed to .failed, or still at its name when the rename failed).</summary>
+    public static string PartialReportText(string reportFile, string? failedFile) =>
+        failedFile is null
+            ? $"A partial report file may have been left at {reportFile} (it could not be renamed to {reportFile}{DupReportWriter.FailedSuffix}), remove or rename it before the job is run again."
+            : $"The partial report was kept and renamed to {failedFile}.";
 }
 
 internal static class DupReportWriter
 {
     public const string HeaderLine = "FilenameAndPath;FileSize;FileSha512Hash;Category;Source;GroupId";
 
-    public static void Write(string reportPathAndName, IEnumerable<DupReportRow> rows)
+    /// <summary>Appended to the report file name when a run fails or is cancelled after the file was created: the partial file is kept under this name.</summary>
+    public const string FailedSuffix = ".failed";
+
+    /// <summary>The token is looked at after this many rows.</summary>
+    internal const int CancelCheckInterval = 4096;
+
+    /// <param name="token">Looked at every <see cref="CancelCheckInterval"/> rows. A cancel after the file was created throws <see cref="ReportWriteCancelledException"/> (before: <see cref="OperationCanceledException"/>).</param>
+    public static void Write(string reportPathAndName, IEnumerable<DupReportRow> rows, CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
+
         // Canonical sort order documented in README. Centralized here so every runner
         // produces a report in the same order without each having to remember to sort.
         var ordered = rows
@@ -81,13 +130,18 @@ internal static class DupReportWriter
             throw new ReportAlreadyExistsException(reportPathAndName, ex);
         }
 
-        // From here on the file was created by this call: every failure may leave a partial file (never deleted automatically)
+        // From here on the file was created by this call: every failure leaves a partial file, which is kept but renamed (see MoveToFailed)
         try
         {
             using var fs = new StreamWriter(stream);
             fs.WriteLine(HeaderLine);
+            int written = 0;
             foreach (var row in ordered)
             {
+                if (++written % CancelCheckInterval == 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                }
                 fs.Write('"');
                 fs.Write(EscapeForCsvQuoted(row.Item.FilenameAndPath));
                 fs.Write("\";");
@@ -101,12 +155,40 @@ internal static class DupReportWriter
                 fs.Write(';');
                 fs.WriteLine(row.GroupId);
             }
+            // A cancel during the sort or after the last periodic check is seen here, still inside the block whose failure keeps the file as .failed
+            fs.Flush();
+            token.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // The stream is closed here (the using ended with the try block)
+            throw new ReportWriteCancelledException(reportPathAndName, MoveToFailed(reportPathAndName), token);
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (Exception ex)
 #pragma warning restore CA1031 // Do not catch general exception types
         {
-            throw new ReportWriteFailedException(reportPathAndName, ex);
+            throw new ReportWriteFailedException(reportPathAndName, MoveToFailed(reportPathAndName), ex);
+        }
+    }
+
+    /// <summary>
+    /// Renames the partial report to <c>&lt;report&gt;.failed</c>, replacing an older file of that name. The partial report is kept (it may help to see how far the run came)
+    /// but must not block the next run, which refuses to start while the report exists. Returns the new path, or null when the rename failed (the partial file then stays where it is).
+    /// </summary>
+    internal static string? MoveToFailed(string reportPathAndName)
+    {
+        string failedPath = reportPathAndName + FailedSuffix;
+        try
+        {
+            File.Move(reportPathAndName, failedPath, overwrite: true);
+            return failedPath;
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            return null;
         }
     }
 

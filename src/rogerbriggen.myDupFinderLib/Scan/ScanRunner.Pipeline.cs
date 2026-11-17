@@ -73,7 +73,7 @@ internal partial class ScanRunner
     // A run is only "finished" when this is still false.
     private volatile bool _interrupted;
 
-    // Set when a stage failed with an unexpected exception (already logged). The state is then left as it is (running), like "Error in Scan!" in the sequential scan.
+    // Set when a stage failed with an unexpected exception (already logged). The run then ends as failed, like "Error in Scan!" in the sequential scan.
     private volatile bool _failed;
 
     private void ScanWithPipeline()
@@ -117,7 +117,8 @@ internal partial class ScanRunner
             WriteChanges();
             if (_failed)
             {
-                // Already logged where it happened. The state is left as it is (running), the same as "Error in Scan!" in the sequential scan.
+                // Already logged where it happened. The run is failed, the same as "Error in Scan!" in the sequential scan.
+                RunnerState = IService.EServiceState.failed;
                 return;
             }
             if (CancelToken.IsCancellationRequested && _interrupted)
@@ -135,10 +136,12 @@ internal partial class ScanRunner
         catch (BatchWriteException ex)
         {
             LogDatabaseWriteFailure(ex);
+            RunnerState = IService.EServiceState.failed;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in Scan!");
+            RunnerState = IService.EServiceState.failed;
         }
         finally
         {
