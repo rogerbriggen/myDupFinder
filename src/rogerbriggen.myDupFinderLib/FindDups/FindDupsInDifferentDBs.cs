@@ -59,38 +59,80 @@ internal class FindDupsInDifferentDBs : BasicRunner<FindDupsInDifferentDBs>, IFi
     {
         base.Start(token);
 
-        string reportFile = FindDupsJobDTO.GetReportFilePath();
+        string reportFile = string.Empty;
         try
         {
+            reportFile = FindDupsJobDTO.GetReportFilePath();
+            // The token is looked at between the phases; a running query is interrupted by it (see DubFinderDB), the write loop looks at it every few thousand rows
+            CancelToken.ThrowIfCancellationRequested();
+
             //Setup base DB
             DubFinderDB.SetupDB(FindDupsJobDTO.DatabaseFileBase);
+            CancelToken.ThrowIfCancellationRequested();
 
-            var rows = FindDupsJobDTO.FindDupsMode == MyDupFinderFindDupsJobDTO.EFindDupsMode.FindDupsTheWholeLot
-                ? BuildWholeLotRows(DubFinderDB.GetAllScanItems(), DubFinderDB.GetAllScanItemsFromOtherDB(FindDupsJobDTO.DatabaseFile))
-                : BuildOnlyDupsRows(DubFinderDB.FindDupsInDifferentDBs(FindDupsJobDTO.DatabaseFile));
+            List<DupReportRow> rows;
+            if (FindDupsJobDTO.FindDupsMode == MyDupFinderFindDupsJobDTO.EFindDupsMode.FindDupsTheWholeLot)
+            {
+                var baseItems = DubFinderDB.GetAllScanItems(CancelToken);
+                CancelToken.ThrowIfCancellationRequested();
+                var secondItems = DubFinderDB.GetAllScanItemsFromOtherDB(FindDupsJobDTO.DatabaseFile, CancelToken);
+                CancelToken.ThrowIfCancellationRequested();
+                rows = BuildWholeLotRows(baseItems, secondItems);
+            }
+            else
+            {
+                var items = DubFinderDB.FindDupsInDifferentDBs(FindDupsJobDTO.DatabaseFile, CancelToken);
+                CancelToken.ThrowIfCancellationRequested();
+                rows = BuildOnlyDupsRows(items);
+            }
+            CancelToken.ThrowIfCancellationRequested();
 
             LogSummary(rows);
-            DupReportWriter.Write(reportFile, rows);
+            DupReportWriter.Write(reportFile, rows, CancelToken);
             _logger.LogInformation("Duplicate report successfully created: {report}", reportFile);
+            RunnerState = IService.EServiceState.finished;
         }
         catch (ReportAlreadyExistsException ex)
         {
-            // The writer never overwrites: the existing report is untouched and no report was written
+            // The writer never overwrites: the existing report is untouched (and not renamed) and no report was written
             _logger.LogError(ex, "The duplicate report {report} already exists and is not overwritten. No report was written. Remove or rename it and run the job again.", reportFile);
+            RunnerState = IService.EServiceState.failed;
+        }
+        catch (ReportWriteCancelledException ex)
+        {
+            _logger.LogInformation("FindDups was cancelled by user while the duplicate report was written. {partial}", FindDupsReportLog.PartialReportText(reportFile, ex.FailedFile));
+            RunnerState = IService.EServiceState.cancelled;
+        }
+        catch (OperationCanceledException) when (CancelToken.IsCancellationRequested)
+        {
+            // Before the report file was created: nothing was written
+            _logger.LogInformation("FindDups was cancelled by user. No report file was created.");
+            RunnerState = IService.EServiceState.cancelled;
         }
         catch (ReportWriteFailedException ex)
         {
-            _logger.LogError(ex, "Error in FindDups! Writing the duplicate report failed after the file was created, a partial report file may have been left: {report}. It is not deleted automatically.", reportFile);
+            _logger.LogError(ex, "Error in FindDups! Writing the duplicate report failed after the file was created. {partial}", FindDupsReportLog.PartialReportText(reportFile, ex.FailedFile));
+            RunnerState = IService.EServiceState.failed;
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (Exception ex)
 #pragma warning restore CA1031 // Do not catch general exception types
         {
             _logger.LogError(ex, "Error in FindDups!");
+            RunnerState = IService.EServiceState.failed;
         }
         finally
         {
-            DubFinderDB.Dispose();
+            try
+            {
+                DubFinderDB.Dispose();
+            }
+#pragma warning disable CA1031 // Do not catch general exception types
+            catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+            {
+                _logger.LogError(ex, "Releasing the database failed.");
+            }
         }
     }
 

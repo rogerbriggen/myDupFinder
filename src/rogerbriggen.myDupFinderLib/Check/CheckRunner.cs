@@ -89,16 +89,36 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
     {
         base.Start(token);
 
-        DbInserts.SetupDB(CheckJobDTO.ScanJobDTO.DatabaseFile, CheckJobDTO.ScanJobDTO.DatabaseSynchronous);
-        _logger.LogInformation("Database state: {diagnostics}", DbInserts.GetDatabaseDiagnostics());
-        Throughput = new ThroughputTracker(_logger);
         try
         {
+            DbInserts.SetupDB(CheckJobDTO.ScanJobDTO.DatabaseFile, CheckJobDTO.ScanJobDTO.DatabaseSynchronous);
+            _logger.LogInformation("Database state: {diagnostics}", DbInserts.GetDatabaseDiagnostics());
+            Throughput = new ThroughputTracker(_logger);
             Check();
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            // Everything that is not handled per file: the database setup, the initial load of the rows, the creation of the report file, the missing-detection, the flush of the report
+            _logger.LogError(ex, "Check failed. {summary}", BuildSummary());
+            if (RunnerState == IService.EServiceState.running)
+            {
+                RunnerState = IService.EServiceState.failed;
+            }
         }
         finally
         {
-            DbInserts.Dispose();
+            try
+            {
+                DbInserts.Dispose();
+            }
+#pragma warning disable CA1031 // Do not catch general exception types
+            catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+            {
+                _logger.LogError(ex, "Releasing the database failed.");
+            }
         }
     }
 
@@ -179,7 +199,7 @@ internal class CheckRunner : BasicRunner<CheckRunner>, ICheckRunner
                 // The base path itself cannot be listed: no file was enumerated, so no "missing" row may be reported
                 _logger.LogError(ex, "Error enumerating files in {basePath}. No missing files are reported.", basePath);
                 writer.Flush();
-                RunnerState = IService.EServiceState.finished;
+                RunnerState = IService.EServiceState.failed;
                 return;
             }
             finally

@@ -47,10 +47,64 @@ public abstract class BasicService<T> : IDisposable, IService
         _runner = runner;
         if (ServiceState == IService.EServiceState.idle)
         {
-            ServiceState = IService.EServiceState.running;
-            _cts = new CancellationTokenSource();
-            _runner.RunnerStateChanged += RunnerStateEventHandler;
-            _runner.Start(_cts.Token);
+            bool runnerStarted = false;
+            try
+            {
+                SetServiceState(IService.EServiceState.running);
+                _cts = new CancellationTokenSource();
+                _runner.RunnerStateChanged += RunnerStateEventHandler;
+                runnerStarted = true;
+                _runner.Start(_cts.Token);
+            }
+#pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen
+            catch (Exception ex)
+#pragma warning restore CA1031 // Keine allgemeinen Ausnahmetypen abfangen
+            {
+                // Safety net: a runner should end in finished, cancelled or failed by itself, but nothing may escape from here
+                // (the job runs on a worker thread, an unhandled exception there ends the process)
+                _logger.LogError(ex, "The runner ended with an unexpected exception.");
+                if (!runnerStarted)
+                {
+                    // The runner never ran: the job did not happen
+                    SetServiceState(IService.EServiceState.failed);
+                    return;
+                }
+            }
+            FollowFinalRunnerState();
+        }
+    }
+
+    /// <summary>
+    /// Sets the service state. The backing state is set before the event is raised, so a subscriber that throws (it is logged, never rethrown) cannot keep the state from changing.
+    /// </summary>
+    private void SetServiceState(IService.EServiceState state)
+    {
+        try
+        {
+            ServiceState = state;
+        }
+#pragma warning disable CA1031 // Keine allgemeinen Ausnahmetypen abfangen
+        catch (Exception ex)
+#pragma warning restore CA1031 // Keine allgemeinen Ausnahmetypen abfangen
+        {
+            _logger.LogError(ex, "A subscriber of ServiceStateChanged threw while the state changed to {state}.", state);
+        }
+    }
+
+    /// <summary>
+    /// After the runner has returned the service state is the final state of the runner. A runner that returns in any other state (running, idle) did not end properly: failed.
+    /// </summary>
+    private void FollowFinalRunnerState()
+    {
+        IService.EServiceState runnerState = _runner!.RunnerState;
+        if (runnerState is IService.EServiceState.finished or IService.EServiceState.cancelled or IService.EServiceState.failed)
+        {
+            SetServiceState(runnerState);
+        }
+        else
+        {
+            _logger.LogError("The runner returned in state {runnerState}, which is not a final state. The service state is set to failed.", runnerState);
+            SetServiceState(IService.EServiceState.failed);
         }
     }
 
@@ -107,6 +161,7 @@ public abstract class BasicService<T> : IDisposable, IService
     private void RunnerStateEventHandler(object? _, IService.EServiceState runnerState)
     {
         _logger.LogInformation("Runner changed to state {runnerState}", runnerState);
-        ServiceState = runnerState;
+        // Called from inside the runner: an exception here must not disturb the run
+        SetServiceState(runnerState);
     }
 }

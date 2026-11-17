@@ -59,28 +59,67 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
     {
         base.Start(token);
 
-        //Setup DB
-        ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile, ScanJobDTO.DatabaseSynchronous);
-        _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
-        Throughput = new ThroughputTracker(_logger);
         try
         {
-            _enumerateFiles = new EnumerateFilesFromDiscToIndex(ScanJobDTO, _serviceProvider.GetService<ILogger<EnumerateFilesFromDiscToIndex>>(), _fileSource);
-            if (ScanJobDTO.HashWorkers > 1)
+            //Setup DB
+            ScanJobDBInserts.SetupDB(ScanJobDTO.DatabaseFile, ScanJobDTO.DatabaseSynchronous);
+            _logger.LogInformation("Database state: {diagnostics}", ScanJobDBInserts.GetDatabaseDiagnostics());
+            Throughput = new ThroughputTracker(_logger);
+            try
             {
-                // Returns only when all its threads have ended
-                ScanWithPipeline();
+                _enumerateFiles = new EnumerateFilesFromDiscToIndex(ScanJobDTO, _serviceProvider.GetService<ILogger<EnumerateFilesFromDiscToIndex>>(), _fileSource);
+                if (ScanJobDTO.HashWorkers > 1)
+                {
+                    // Returns only when all its threads have ended
+                    ScanWithPipeline();
+                }
+                else
+                {
+                    Scan();
+                }
             }
-            else
+            finally
             {
-                Scan();
+                (_enumerateFiles as IDisposable)?.Dispose();
             }
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            // The database could not be set up, or something outside the file loop failed (the filter initialisation, the dispose of the enumerator)
+            _logger.LogError(ex, "Scanning failed before or after the file loop.");
+            FailIfStillRunning();
         }
         finally
         {
-            (_enumerateFiles as IDisposable)?.Dispose();
+            DisposeDbInserts();
         }
-        ScanJobDBInserts.Dispose();
+    }
+
+    /// <summary>
+    /// The run ended without reaching finished or cancelled (an exception that was not handled where it happened): it is failed.
+    /// </summary>
+    private void FailIfStillRunning()
+    {
+        if (RunnerState == IService.EServiceState.running)
+        {
+            RunnerState = IService.EServiceState.failed;
+        }
+    }
+
+    private void DisposeDbInserts()
+    {
+        try
+        {
+            ScanJobDBInserts.Dispose();
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            _logger.LogError(ex, "Releasing the database failed.");
+        }
     }
 
     private void Scan()
@@ -184,10 +223,12 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
         catch (BatchWriteException ex)
         {
             LogDatabaseWriteFailure(ex);
+            RunnerState = IService.EServiceState.failed;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in Scan!");
+            RunnerState = IService.EServiceState.failed;
         }
     }
 
@@ -199,7 +240,7 @@ internal partial class ScanRunner : BasicRunner<ScanRunner>, IScanRunner
 
     private void LogDatabaseWriteFailure(BatchWriteException ex)
     {
-        // Fatal: the database cannot be written, so continuing to hash would be pointless. RunnerState is left as it is (running).
+        // Fatal: the database cannot be written, so continuing to hash would be pointless. RunnerState is set to failed by the caller.
         _logger.LogError(ex, "Scanning stopped because of a database write failure. {PendingCount} operations could not be written and are lost unless the problem is fixed and the scan is started again. Files already committed stay in the database, a new scan will skip them.", ex.PendingOperationCount);
     }
 

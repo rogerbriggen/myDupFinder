@@ -6,11 +6,13 @@ using System.Collections.Generic;
 using System.Data;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RogerBriggen.MyDupFinderData;
+using SQLitePCL;
 
 namespace RogerBriggen.MyDupFinderDB;
 
@@ -46,7 +48,7 @@ public class DubFinderDB : IDisposable
 
 
     //public IList<ScanItemDto> FindDupsInSameDB()
-    public List<ScanItemDto>? FindDupsInSameDB()
+    public List<ScanItemDto>? FindDupsInSameDB(CancellationToken token = default)
     {
         if (_dbContext is null)
         {
@@ -59,7 +61,7 @@ public class DubFinderDB : IDisposable
             //     .Where(x => x.Count() > 1)
             //     .ToList
 
-            return FindDupsInSameDB(_dbContext);
+            return FindDupsInSameDB(_dbContext, token);
         }
     }
 
@@ -70,19 +72,68 @@ public class DubFinderDB : IDisposable
     // not depend on the order in which the rows were inserted. The GroupIds and the pairing in the report are handed
     // out in this order, see the documentation of the two find-dups runners. The rows are only read, so they are not tracked.
 
-    internal static List<ScanItemDto> FindDupsInSameDB(DubFinderContext context) =>
-        context.Set<ScanItemDto>()
+    internal static List<ScanItemDto> FindDupsInSameDB(DubFinderContext context, CancellationToken token = default) =>
+        RunInterruptible(context, token, () => context.Set<ScanItemDto>()
             .FromSqlInterpolated($"SELECT * FROM ScanItems WHERE FileSha512Hash IN (SELECT FileSha512Hash FROM ScanItems GROUP BY FileSHA512Hash HAVING COUNT(*) >1) ORDER BY FileSha512Hash, FilenameAndPath, Id")
             .AsNoTracking()
-            .ToList();
+            .ToList());
 
-    internal static List<ScanItemDto> GetAllScanItems(DubFinderContext context) =>
-        context.Set<ScanItemDto>()
+    internal static List<ScanItemDto> GetAllScanItems(DubFinderContext context, CancellationToken token = default) =>
+        RunInterruptible(context, token, () => context.Set<ScanItemDto>()
             .AsNoTracking()
             .OrderBy(s => s.FileSha512Hash)
             .ThenBy(s => s.FilenameAndPath)
             .ThenBy(s => s.Id)
-            .ToList();
+            .ToList());
+
+    /// <summary>
+    /// Runs a query so that a cancelled <paramref name="token"/> interrupts it (<c>sqlite3_interrupt</c> on the connection of the context): the running command then fails with
+    /// SQLITE_INTERRUPT, which is turned into an <see cref="OperationCanceledException"/>. Without a token that can be cancelled the query simply runs.
+    /// <para>
+    /// The connection is opened here and closed again afterwards (when it was closed before), so that its handle is known while the query runs. The registration of the token is disposed
+    /// BEFORE the connection is closed: disposing it waits for a callback that is running right now, and sqlite3_interrupt may not be called with a connection that closes while it runs.
+    /// An interrupt that arrives while no statement runs does nothing.
+    /// </para>
+    /// </summary>
+    internal static T RunInterruptible<T>(DbContext context, CancellationToken token, Func<T> query)
+    {
+        if (!token.CanBeCanceled)
+        {
+            return query();
+        }
+        token.ThrowIfCancellationRequested();
+        var connection = context.Database.GetDbConnection();
+        bool openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            context.Database.OpenConnection();
+        }
+        try
+        {
+            if (connection is not SqliteConnection { Handle: { } handle })
+            {
+                return query();
+            }
+            using var registration = token.Register(static state => raw.sqlite3_interrupt((sqlite3)state!), handle);
+            // A cancel before the registration (or while the connection opened) fired no callback, or one with no statement running: look again now
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                return query();
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == raw.SQLITE_INTERRUPT && token.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("The query was interrupted because the run was cancelled.", ex, token);
+            }
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                context.Database.CloseConnection();
+            }
+        }
+    }
 
     /// <summary>
     /// Name under which the second database is attached to the connection of the base database during
@@ -106,8 +157,8 @@ public class DubFinderDB : IDisposable
     /// </para>
     /// </summary>
     /// <exception cref="FileNotFoundException">The second database file does not exist.</exception>
-    internal static List<ScanItemDto>? FindDupsInDifferentDBs(DubFinderContext context, string secondDatabaseFile) =>
-        FindDupsInDifferentDBs(context, secondDatabaseFile, null);
+    internal static List<ScanItemDto>? FindDupsInDifferentDBs(DubFinderContext context, string secondDatabaseFile, CancellationToken token = default) =>
+        FindDupsInDifferentDBs(context, secondDatabaseFile, null, token);
 
     /// <summary>
     /// The two SQL forms of the cross-database match. SQLite has no table statistics here and the second database must not be
@@ -134,15 +185,15 @@ public class DubFinderDB : IDisposable
     /// with many deleted rows looks bigger; a wrong choice only costs time, never changes the result. The connection must have the
     /// second database attached.
     /// </summary>
-    private static HashMatchForm ChooseForm(DubFinderContext context)
+    private static HashMatchForm ChooseForm(DubFinderContext context, CancellationToken token)
     {
-        long baseSize = context.Database.SqlQuery<long>($"SELECT COALESCE(MAX(rowid), 0) AS Value FROM main.ScanItems").Single();
-        long secondSize = context.Database.SqlQuery<long>($"SELECT COALESCE(MAX(rowid), 0) AS Value FROM dupfinder_second.ScanItems").Single();
+        long baseSize = RunInterruptible(context, token, () => context.Database.SqlQuery<long>($"SELECT COALESCE(MAX(rowid), 0) AS Value FROM main.ScanItems").Single());
+        long secondSize = RunInterruptible(context, token, () => context.Database.SqlQuery<long>($"SELECT COALESCE(MAX(rowid), 0) AS Value FROM dupfinder_second.ScanItems").Single());
         return secondSize * InFormSizeRatio < baseSize ? HashMatchForm.In : HashMatchForm.Exists;
     }
 
     /// <param name="form">The SQL form to use, or null to choose it from the sizes of the two tables (tests force a form).</param>
-    internal static List<ScanItemDto>? FindDupsInDifferentDBs(DubFinderContext context, string secondDatabaseFile, HashMatchForm? form)
+    internal static List<ScanItemDto>? FindDupsInDifferentDBs(DubFinderContext context, string secondDatabaseFile, HashMatchForm? form, CancellationToken token = default)
     {
         ArgumentNullException.ThrowIfNull(context);
         string attachTarget = GetExistingDatabaseFile(secondDatabaseFile);
@@ -162,21 +213,23 @@ public class DubFinderDB : IDisposable
             attached = true;
 
             // Rows without a hash never match.
-            var chosen = form ?? ChooseForm(context);
-            var items = (chosen == HashMatchForm.In
+            var chosen = form ?? ChooseForm(context, token);
+            token.ThrowIfCancellationRequested();
+            var items = RunInterruptible(context, token, () => (chosen == HashMatchForm.In
                     ? context.Set<ScanItemDto>().FromSql($"SELECT s.* FROM ScanItems AS s WHERE s.FileSha512Hash IN (SELECT o.FileSha512Hash FROM dupfinder_second.ScanItems AS o WHERE o.FileSha512Hash <> '') ORDER BY s.FileSha512Hash, s.FilenameAndPath, s.Id")
                     : context.Set<ScanItemDto>().FromSql($"SELECT s.* FROM ScanItems AS s WHERE s.FileSha512Hash <> '' AND EXISTS (SELECT 1 FROM dupfinder_second.ScanItems AS o WHERE o.FileSha512Hash = s.FileSha512Hash) ORDER BY s.FileSha512Hash, s.FilenameAndPath, s.Id"))
                 .AsNoTracking()
-                .ToList();
+                .ToList());
             if (items.Count > 0)
             {
                 return items;
             }
 
             // No match: null if the second database has no non-empty hash at all, an empty list otherwise
-            bool secondHasHashes = context.Database
+            token.ThrowIfCancellationRequested();
+            bool secondHasHashes = RunInterruptible(context, token, () => context.Database
                 .SqlQuery<int>($"SELECT EXISTS (SELECT 1 FROM dupfinder_second.ScanItems WHERE FileSha512Hash <> '') AS Value")
-                .Single() != 0;
+                .Single()) != 0;
             return secondHasHashes ? items : null;
         }
         finally
@@ -229,7 +282,7 @@ public class DubFinderDB : IDisposable
     /// Returns every ScanItem from the current (base) database, ordered by hash, path and primary key.
     /// Used by FindDupsTheWholeLot to categorize each file as Duplicate or Unique.
     /// </summary>
-    public List<ScanItemDto>? GetAllScanItems()
+    public List<ScanItemDto>? GetAllScanItems(CancellationToken token = default)
     {
         if (_dbContext is null)
         {
@@ -237,7 +290,7 @@ public class DubFinderDB : IDisposable
         }
         lock (dbContextLock)
         {
-            return GetAllScanItems(_dbContext);
+            return GetAllScanItems(_dbContext, token);
         }
     }
 
@@ -246,7 +299,7 @@ public class DubFinderDB : IDisposable
     /// Used by FindDupsTheWholeLot in cross-DB mode.
     /// </summary>
     /// <exception cref="FileNotFoundException">The database file does not exist (it is not created).</exception>
-    public List<ScanItemDto>? GetAllScanItemsFromOtherDB(string secondDatabaseFile)
+    public List<ScanItemDto>? GetAllScanItemsFromOtherDB(string secondDatabaseFile, CancellationToken token = default)
     {
         if (string.IsNullOrWhiteSpace(secondDatabaseFile))
         {
@@ -255,12 +308,12 @@ public class DubFinderDB : IDisposable
         GetExistingDatabaseFile(secondDatabaseFile);
 
         using var secondDbContext = new DubFinderContext(DubFinderContextFactory.GetDbContextOptions(secondDatabaseFile, DatabaseConnectionSettings.ForReading()));
-        return secondDbContext.ScanItems?
+        return RunInterruptible(secondDbContext, token, () => secondDbContext.ScanItems?
             .AsNoTracking()
             .OrderBy(s => s.FileSha512Hash)
             .ThenBy(s => s.FilenameAndPath)
             .ThenBy(s => s.Id)
-            .ToList();
+            .ToList());
     }
 
     /// <summary>
@@ -271,7 +324,7 @@ public class DubFinderDB : IDisposable
     /// <param name="secondDatabaseFile">Path to the second database file to compare against. The file must exist.</param>
     /// <returns>A list of items from the base database whose hash exists in the second database (empty if there is none), or null if the second database has no non-empty hash.</returns>
     /// <exception cref="FileNotFoundException">The second database file does not exist (it is not created).</exception>
-    public List<ScanItemDto>? FindDupsInDifferentDBs(string secondDatabaseFile)
+    public List<ScanItemDto>? FindDupsInDifferentDBs(string secondDatabaseFile, CancellationToken token = default)
     {
         if (_dbContext is null)
         {
@@ -284,7 +337,7 @@ public class DubFinderDB : IDisposable
 
         lock (dbContextLock)
         {
-            return FindDupsInDifferentDBs(_dbContext, secondDatabaseFile);
+            return FindDupsInDifferentDBs(_dbContext, secondDatabaseFile, token);
         }
     }
 

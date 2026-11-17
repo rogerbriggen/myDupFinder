@@ -2,6 +2,7 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics.Contracts;
 using System.Globalization;
 using System.IO;
@@ -17,10 +18,36 @@ namespace RogerBriggen.MyDupFinder;
 
 class Program
 {
-    static void Main(string[] args)
+    /// <summary>
+    /// Exit codes: 0 = everything finished, 1 = a job failed, or the arguments, the project file or the sanity check were wrong, or an exception reached Main, 2 = a job was cancelled by the user.
+    /// </summary>
+    static int Main(string[] args)
     {
         System.Threading.Thread.CurrentThread.Name = "MainThread";
 
+        // Last resort: whatever is unhandled on any thread ends up in the log before the process ends
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+
+        try
+        {
+            return Run(args);
+        }
+#pragma warning disable CA1031 // Do not catch general exception types
+        catch (Exception ex)
+#pragma warning restore CA1031 // Do not catch general exception types
+        {
+            LogFatal(ex);
+            return JobChain.ExitCodeFailed;
+        }
+        finally
+        {
+            // Flush the log in every path (the ProcessExit handler does it too, doing it twice is harmless)
+            Log.CloseAndFlush();
+        }
+    }
+
+    private static int Run(string[] args)
+    {
         // Setup log with DI
         var serviceCollection = new ServiceCollection();
         ConfigureServices(serviceCollection);
@@ -33,6 +60,7 @@ class Program
         var assembly = typeof(Program).Assembly;
         logger.LogInformation($"Application with version {assembly.GetName().Version}  ({ThisAssembly.AssemblyInformationalVersion}) started...");
 
+        int exitCode = JobChain.ExitCodeFinished;
 
         //Do stuff
         //Scan commandline
@@ -51,6 +79,7 @@ class Program
                 catch (Exception ex)
                 {
                     logger.LogError(ex, $"Example project file could not be written! {args[1]}");
+                    exitCode = JobChain.ExitCodeFailed;
                 }
 
             }
@@ -65,111 +94,13 @@ class Program
                 catch (Exception ex)
                 {
                     logger.LogError(ex, $"Example project file could not be read! {args[1]}");
+                    exitCode = JobChain.ExitCodeFailed;
                 }
 
             }
             else if (args[0].ToLower(ci) == "run")
             {
-                try
-                {
-                    MyDupFinderProjectDTO? dto;
-                    MyDupFinderProject.ReadConfigurationFromFile(args[1], out dto);
-                    if (dto is null)
-                    {
-                        logger.LogError("Could not read Project file");
-                        return;
-                    }
-
-                    //Check and fix config
-                    MyDupFinderProjectDTO.CheckSanity(dto);
-                    MyDupFinderProjectDTO.FixDto(dto);
-
-                    //Jobs in execution order: scan, refresh (they change databases), then find dups, check (they only read them)
-                    foreach (ProjectJob job in dto.GetJobsInExecutionOrder())
-                    {
-                        switch (job.Dto)
-                        {
-                            case MyDupFinderScanJobDTO scanDto:
-                                using (var scanService = serviceProvider.GetService<ScanService>())
-                                {
-                                    if (scanService is null)
-                                    {
-                                        logger.LogError("No scanService registered!");
-                                        return;
-                                    }
-                                    logger.LogInformation("Running Job {JobName}...", scanDto.JobName);
-                                    ThreadStart ts = delegate { scanService.StartScan(scanDto); };
-                                    var t = new Thread(ts);
-                                    t.Name = "ScanService";
-                                    t.Start();
-                                    //Wait for t or for a key press
-                                    WaitForThreadOrKeyPress(logger, scanDto.JobName, scanService, t);
-                                }
-                                break;
-
-                            case MyDupFinderRefreshJobDTO refreshDto:
-                                using (var refreshService = serviceProvider.GetService<RefreshService>())
-                                {
-                                    if (refreshService is null)
-                                    {
-                                        logger.LogError("No refreshService registered!");
-                                        return;
-                                    }
-                                    logger.LogInformation("Running Job {JobName}...", refreshDto.JobName);
-                                    ThreadStart ts = delegate { refreshService.StartRefresh(refreshDto); };
-                                    var t = new Thread(ts);
-                                    t.Name = "RefreshService";
-                                    t.Start();
-                                    //Wait for t or for a key press
-                                    WaitForThreadOrKeyPress(logger, refreshDto.JobName, refreshService, t);
-                                }
-                                break;
-
-                            case MyDupFinderFindDupsJobDTO findDupsDto:
-                                using (var findDupsService = serviceProvider.GetService<FindDupsService>())
-                                {
-                                    if (findDupsService is null)
-                                    {
-                                        logger.LogError("No scanService registered!");
-                                        return;
-                                    }
-                                    logger.LogInformation("Running Job {JobName}...", findDupsDto.JobName);
-                                    ThreadStart ts = delegate { findDupsService.Start(findDupsDto); };
-                                    var t = new Thread(ts);
-                                    t.Name = "ScanService";
-                                    t.Start();
-                                    //Wait for t or for a key press
-                                    WaitForThreadOrKeyPress(logger, findDupsDto.JobName, findDupsService, t);
-                                }
-                                break;
-
-                            case MyDupFinderCheckJobDTO checkDto:
-                                using (var checkService = serviceProvider.GetService<CheckService>())
-                                {
-                                    if (checkService is null)
-                                    {
-                                        logger.LogError("No checkService registered!");
-                                        return;
-                                    }
-                                    logger.LogInformation("Running Job {JobName}...", checkDto.ScanJobDTO.JobName);
-                                    ThreadStart ts = delegate { checkService.StartCheck(checkDto); };
-                                    var t = new Thread(ts);
-                                    t.Name = "CheckService";
-                                    t.Start();
-                                    //Wait for t or for a key press
-                                    WaitForThreadOrKeyPress(logger, checkDto.ScanJobDTO.JobName, checkService, t);
-                                }
-                                break;
-                        }
-                    }
-
-
-                    logger.LogInformation("All Jobs finished");
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, $"Exception during run of the job...! {args[1]}");
-                }
+                exitCode = RunProject(logger, serviceProvider, args[1]);
             }
             else if (args[0].ToLower(ci) == "applycheck")
             {
@@ -179,63 +110,206 @@ class Program
                     if (applier is null)
                     {
                         logger.LogError("No CheckReportApplier registered!");
-                        return;
+                        exitCode = JobChain.ExitCodeFailed;
                     }
-                    applier.Apply(args[1]);
+                    else
+                    {
+                        applier.Apply(args[1]);
+                    }
                 }
                 catch (Exception ex)
                 {
                     logger.LogError(ex, $"Exception during applyCheck...! {args[1]}");
+                    exitCode = JobChain.ExitCodeFailed;
                 }
             }
             else
             {
                 ShowHelp();
+                exitCode = JobChain.ExitCodeFailed;
             }
         }
         else
         {
             ShowHelp();
+            exitCode = JobChain.ExitCodeFailed;
         }
 
         // Finish log
-        logger.LogInformation("Application closing...");
+        logger.LogInformation("Application closing... (exit code {ExitCode})", exitCode);
 
         // Use for Microsoft logger.... for serilog, we do it with AppDomain.CurrentDomain.ProcessExit
         // serviceProvider.Dispose();
+        return exitCode;
     }
 
-    private static void WaitForThreadOrKeyPress(ILogger<Program> logger, string jobName, IService service, Thread t)
+    /// <summary>
+    /// Runs the jobs of the project file in order and returns the exit code (see <see cref="JobChain"/>): a job that fails or is cancelled stops the project.
+    /// </summary>
+    private static int RunProject(ILogger<Program> logger, IServiceProvider serviceProvider, string projectFile)
     {
-        while (true)
+        try
         {
-            //Check for key
-            if (Console.KeyAvailable)
+            MyDupFinderProjectDTO? dto;
+            MyDupFinderProject.ReadConfigurationFromFile(projectFile, out dto);
+            if (dto is null)
             {
-                var key = Console.ReadKey();
-                if (key.Key == ConsoleKey.Enter)
+                logger.LogError("Could not read Project file");
+                return JobChain.ExitCodeFailed;
+            }
+
+            //Check and fix config
+            MyDupFinderProjectDTO.CheckSanity(dto);
+            MyDupFinderProjectDTO.FixDto(dto);
+
+            //Jobs in execution order: scan, refresh (they change databases), then find dups, check (they only read them)
+            var jobs = new List<ChainedJob>();
+            foreach (ProjectJob job in dto.GetJobsInExecutionOrder())
+            {
+                switch (job.Dto)
                 {
-                    //Cancel...
-                    service.Stop();
+                    case MyDupFinderScanJobDTO scanDto:
+                        jobs.Add(new ChainedJob(scanDto.JobName, () => RunJob<ScanService>(logger, serviceProvider, scanDto.JobName, "ScanService", s => s.StartScan(scanDto))));
+                        break;
+
+                    case MyDupFinderRefreshJobDTO refreshDto:
+                        jobs.Add(new ChainedJob(refreshDto.JobName, () => RunJob<RefreshService>(logger, serviceProvider, refreshDto.JobName, "RefreshService", s => s.StartRefresh(refreshDto))));
+                        break;
+
+                    case MyDupFinderFindDupsJobDTO findDupsDto:
+                        jobs.Add(new ChainedJob(findDupsDto.JobName, () => RunJob<FindDupsService>(logger, serviceProvider, findDupsDto.JobName, "FindDupsService", s => s.Start(findDupsDto))));
+                        break;
+
+                    case MyDupFinderCheckJobDTO checkDto:
+                        jobs.Add(new ChainedJob(checkDto.ScanJobDTO.JobName, () => RunJob<CheckService>(logger, serviceProvider, checkDto.ScanJobDTO.JobName, "CheckService", s => s.StartCheck(checkDto))));
+                        break;
                 }
             }
-            //Check for Thread
-            if (!t.IsAlive)
-            {
-                //We are done...
-                if (service.ServiceState == IService.EServiceState.finished)
-                {
-                    logger.LogInformation("Scan Job {JobName} finished!", jobName);
-                }
-                else if (service.ServiceState == IService.EServiceState.cancelled)
-                {
-                    logger.LogInformation("Scan Job {JobName} cancelled!", jobName);
-                }
-                break;
-            }
-            //Breath...
-            System.Threading.Thread.Sleep(100);
+
+            return JobChain.Run(jobs, logger).ExitCode;
         }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, $"Exception during run of the job...! {projectFile}");
+            return JobChain.ExitCodeFailed;
+        }
+    }
+
+    /// <summary>
+    /// Runs one job on its own thread and waits for it (or for Enter, which cancels it). Returns the final state of the service; a service that does not exist or
+    /// ends in any other state than finished or cancelled is failed. The worker thread is always joined before the service is disposed.
+    /// </summary>
+    private static IService.EServiceState RunJob<TService>(ILogger<Program> logger, IServiceProvider serviceProvider, string jobName, string threadName, Action<TService> start)
+        where TService : BasicService<TService>
+    {
+        using var service = serviceProvider.GetService<TService>();
+        if (service is null)
+        {
+            logger.LogError("No {Service} registered!", typeof(TService).Name);
+            return IService.EServiceState.failed;
+        }
+        logger.LogInformation("Running Job {JobName}...", jobName);
+        var t = new Thread(() =>
+        {
+            try
+            {
+                start(service);
+            }
+            catch (Exception ex)
+            {
+                // The services handle their errors themselves; this is the last line before the process would be terminated by an unhandled exception on this thread
+                logger.LogError(ex, "Job {JobName} ended with an unexpected exception.", jobName);
+            }
+        });
+        t.Name = threadName;
+        t.Start();
+        try
+        {
+            //Wait for t or for a key press
+            WaitForThreadOrKeyPress(logger, service, t);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Waiting for Job {JobName} failed. The job is stopped.", jobName);
+            service.Stop();
+        }
+        finally
+        {
+            // Whatever happened above: the service must not be disposed while its thread still works with it
+            t.Join();
+        }
+
+        return service.ServiceState switch
+        {
+            IService.EServiceState.finished => IService.EServiceState.finished,
+            IService.EServiceState.cancelled => IService.EServiceState.cancelled,
+            _ => IService.EServiceState.failed,
+        };
+    }
+
+    private static bool s_keyboardNoticeLogged;
+
+    private static void WaitForThreadOrKeyPress(ILogger<Program> logger, IService service, Thread t)
+    {
+        // With redirected input (a pipe, a service, a scheduled task) there is no keyboard to look at: Console.KeyAvailable throws there
+        bool keyboard = !Console.IsInputRedirected;
+        if (!keyboard && !s_keyboardNoticeLogged)
+        {
+            s_keyboardNoticeLogged = true;
+            logger.LogInformation("The input is redirected: cancelling with Enter is not available.");
+        }
+        //Wait for the thread; look at the keyboard in between
+        while (!t.Join(100))
+        {
+            if (!keyboard)
+            {
+                continue;
+            }
+            try
+            {
+                if (Console.KeyAvailable)
+                {
+                    var key = Console.ReadKey();
+                    if (key.Key == ConsoleKey.Enter)
+                    {
+                        //Cancel...
+                        service.Stop();
+                    }
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                // No console to read from: go on without the keyboard, the job keeps running
+                keyboard = false;
+                logger.LogInformation(ex, "The keyboard cannot be read: cancelling with Enter is not available.");
+            }
+        }
+    }
+
+    private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        LogFatal(e.ExceptionObject);
+        Log.CloseAndFlush();
+    }
+
+    private static void LogFatal(object exceptionObject)
+    {
+        try
+        {
+            if (exceptionObject is Exception ex)
+            {
+                Log.Fatal(ex, "Unhandled exception, the application ends.");
+            }
+            else
+            {
+                Log.Fatal("Unhandled exception, the application ends: {Exception}", exceptionObject);
+            }
+        }
+        catch (Exception)
+        {
+            // The log itself is broken: nothing more to do, the console is the last resort below
+        }
+        Console.Error.WriteLine($"Unhandled exception, the application ends: {exceptionObject}");
     }
 
     private static void ShowHelp()

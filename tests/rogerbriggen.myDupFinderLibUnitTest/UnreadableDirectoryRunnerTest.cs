@@ -241,6 +241,7 @@ public class UnreadableDirectoryRunnerTest : IDisposable
 
         var runner = RunRefresh(source, log);
 
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Equal(0, runner.RemovedCount);
         Assert.Equal(11, ReadPaths().Count);
         Assert.Contains(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("Error enumerating files", StringComparison.Ordinal));
@@ -319,6 +320,7 @@ public class UnreadableDirectoryRunnerTest : IDisposable
 
         var (runner, rows) = RunCheck(source, CheckJob(), log);
 
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Empty(rows);
         Assert.Equal(0, runner.MissingOnDiskCount);
         Assert.Contains(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("Error enumerating files", StringComparison.Ordinal));

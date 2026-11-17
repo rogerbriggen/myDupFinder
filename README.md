@@ -76,6 +76,20 @@ myDupFinder run projectfile.xml
 myDupFinder applyCheck check-MyJob-20260613-100000.csv
 ```
 
+### Cancelling and exit codes
+
+A running job is cancelled by pressing **Enter** in the console (the job stops at the next file and keeps what it has written; a scan can be resumed). If the input is redirected (a pipe, a service, a scheduled task) there is no keyboard to read: the program logs once that cancelling with Enter is not available and the job runs to its end.
+
+**Exit codes** of `myDupFinder`:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Everything finished: all jobs of the project finished, or the other command succeeded. |
+| `1` | A job failed, or the arguments, the project file or its sanity check were wrong, or `applyCheck` failed, or an unexpected exception reached the program. |
+| `2` | A job was cancelled by the user. |
+
+Every job ends as exactly one of *finished*, *cancelled* or *failed* (an error that stops the job: the database cannot be opened or written, the base path cannot be listed, the report cannot be created, and so on; the error is in the log). **After a job that fails or is cancelled the remaining jobs of the project are not run**, because later jobs work on the result of the earlier ones (a find-duplicates run after a failed scan would produce a report that looks complete and is not). The log says which job stopped the project and how many jobs were not run.
+
 ## Project File (projectfile.xml)
 
 The application is configured through an XML project file. You can generate an example with the `exampleproject` command. The project file contains scan jobs, check jobs, and find-duplicates jobs.
@@ -156,7 +170,8 @@ The application is configured through an XML project file. You can generate an e
 ### Database files and report files
 
 - **`DatabaseFile` / `DatabaseFileBase`** may be an absolute path, a relative path or a bare file name such as `scan.db`. A relative path is resolved against the current directory of the process, the missing directories are created, and the database is opened at exactly that full path. Characters like `;`, `=`, `'` or spaces in the path are fine.
-- **A find-duplicates report is never overwritten.** The report file is `<ReportPath><JobName> dupReport.csv` (`ReportPath` with or without a trailing separator gives the same file). If it already exists, the project is rejected before it runs; if it appears while the job runs, the job writes nothing, leaves the existing file as it is and logs an error. Remove or rename the old report to run the job again.
+- **A find-duplicates report is never overwritten.** The report file is `<ReportPath><JobName> dupReport.csv` (`ReportPath` with or without a trailing separator gives the same file). If it already exists, the project is rejected before it runs; if it appears while the job runs, the job writes nothing, leaves the existing file as it is (it is not renamed either), ends as failed and logs an error. Remove or rename the old report to run the job again.
+- **A find-duplicates run that fails or is cancelled after it created the report** keeps the partial file but renames it to `<report file name>.failed` (for example `MyJob dupReport.csv.failed`; an older `.failed` file of the same name is replaced). So the partial report does not block the next run, and it is never mistaken for a complete one. A run that is cancelled before the report was created leaves no file. A cancel is looked at between the phases of the job (opening the database, the queries, building the rows, writing), every few thousand rows while the report is written, and a query that is running is interrupted.
 
 ### Database settings: `DatabaseSynchronous`, journal mode and where the database file lives
 

@@ -183,7 +183,10 @@ public class FindDupsReportFileTest : IDisposable
         Assert.IsNotType<ReportAlreadyExistsException>(ex);
         Assert.Equal(report, ex.ReportFile);
         Assert.Equal("simulated write failure", ex.InnerException!.Message);
-        Assert.True(File.Exists(report)); // the partial file is left, not deleted
+        // the partial file is kept, but under the name .failed, so that it does not block the next run
+        Assert.False(File.Exists(report));
+        Assert.Equal(report + DupReportWriter.FailedSuffix, ex.FailedFile);
+        Assert.True(File.Exists(report + DupReportWriter.FailedSuffix));
     }
 
     [Fact]
@@ -238,6 +241,7 @@ public class FindDupsReportFileTest : IDisposable
             runner.Start(CancellationToken.None); // does not throw: the error is logged like the other runners do
         }
 
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Equal(ExistingContent, File.ReadAllText(report));
         Assert.Single(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("already exists and is not overwritten") && e.Message.Contains(report));
         Assert.DoesNotContain(log.Entries, e => e.Message.Contains("successfully created"));
@@ -258,6 +262,7 @@ public class FindDupsReportFileTest : IDisposable
             runner.Start(CancellationToken.None);
         }
 
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Equal(ExistingContent, File.ReadAllText(report));
         Assert.Single(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("already exists and is not overwritten") && e.Message.Contains(report));
         Assert.Single(Directory.GetFiles(_tempDir, "*.csv"));

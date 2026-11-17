@@ -409,8 +409,7 @@ public class ScanPipelineTest : IDisposable
         Assert.DoesNotContain(rows, r => r.Filename == poisoned);
         Assert.Equal(0, rows.Count % 10);
         Assert.Empty(errors);
-        Assert.NotEqual(IService.EServiceState.finished, runner.RunnerState);
-        Assert.NotEqual(IService.EServiceState.cancelled, runner.RunnerState);
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Equal(0, runner.RunningStageCount);
         Assert.Contains(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("database write failure", StringComparison.Ordinal));
         Assert.DoesNotContain(log.Entries, e => e.Message.Contains("Hashing of", StringComparison.Ordinal));
@@ -442,8 +441,7 @@ public class ScanPipelineTest : IDisposable
         Assert.Equal(files.Take(100).Select(f => f.FullPath).OrderBy(p => p, StringComparer.Ordinal), rows.Select(r => r.FilenameAndPath));
         Assert.Empty(errors);
         Assert.Contains(log.Entries, e => e.Level == LogLevel.Error && e.Message == "Error in Scan!");
-        Assert.NotEqual(IService.EServiceState.finished, runner.RunnerState);
-        Assert.NotEqual(IService.EServiceState.cancelled, runner.RunnerState);
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Equal(0, runner.RunningStageCount);
         Assert.DoesNotContain(log.Entries, e => e.Message.StartsWith("Scanning finished", StringComparison.Ordinal));
     }
@@ -486,8 +484,7 @@ public class ScanPipelineTest : IDisposable
         Assert.All(rows, r => Assert.Equal(Reference(r.FilenameAndPath), r.Hash));
         Assert.Empty(errors);
         Assert.Contains(log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("hash worker failed unexpectedly", StringComparison.Ordinal));
-        Assert.NotEqual(IService.EServiceState.finished, runner.RunnerState);
-        Assert.NotEqual(IService.EServiceState.cancelled, runner.RunnerState);
+        Assert.Equal(IService.EServiceState.failed, runner.RunnerState);
         Assert.Equal(0, runner.RunningStageCount);
     }
 

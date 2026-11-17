@@ -12,7 +12,10 @@ public interface IService
         idle,
         running,
         cancelled,
-        finished
+        finished,
+
+        /// <summary>The run ended because of an error (logged). A run that is over is in exactly one of finished, cancelled and failed.</summary>
+        failed
     }
 
     event EventHandler<int>? ServiceProgressChanged;
