@@ -11,7 +11,7 @@ namespace RogerBriggen.MyDupFinderLib;
 
 /// <summary>
 /// RFC 4180 CSV writer/reader for the check report. Header is written as `# Key=Value`
-/// comment lines so applyCheck is self-contained.
+/// comment lines so applyCheck is self-contained. The reader streams the file (see <see cref="Read"/>).
 /// </summary>
 internal static class CheckReportCsv
 {
@@ -70,43 +70,164 @@ internal static class CheckReportCsv
         writer.WriteLine(sb.ToString());
     }
 
+    /// <summary>
+    /// Reads the header of a report and returns it together with the rows of the report.
+    /// The header and the column header line are read and validated now. The rows are NOT in memory: the returned sequence is lazy, it
+    /// opens the file and reads it record by record whenever it is enumerated (every enumeration is a new pass over the file, nothing is cached).
+    /// A malformed row (wrong field count, an unterminated quoted field, an unparsable value) throws while the sequence is enumerated, not here.
+    /// A quoted field may contain commas, doubled quotes and line breaks (CR, LF, CRLF), they are returned exactly as they are in the file.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The file is not a check report (no signature, no or a wrong column header line).</exception>
     public static (CheckReportHeader Header, IEnumerable<CheckReportRow> Rows) Read(string path)
     {
-        var lines = File.ReadAllLines(path);
-        var header = new CheckReportHeader();
-        int i = 0;
-        bool signatureSeen = false;
-        for (; i < lines.Length; i++)
+        CheckReportHeader header;
+        using (var reader = OpenAndReadHeader(path, out header))
         {
-            var line = lines[i];
-            if (line.StartsWith("#", StringComparison.Ordinal))
+            // Only the header is needed now; the rows are read when the sequence is enumerated
+        }
+        return (header, EnumerateRows(path, header));
+    }
+
+    private static IEnumerable<CheckReportRow> EnumerateRows(string path, CheckReportHeader expectedHeader)
+    {
+        using var reader = OpenAndReadHeader(path, out var reopened);
+        // A report that was replaced by another one since Read must not be read as if it were the first (other database, other version)
+        if (!SameHeader(expectedHeader, reopened))
+        {
+            throw new InvalidDataException("The report changed while it was read (its header is not the one that was read first).");
+        }
+        var fields = new List<string>(s_columns.Length);
+        var sb = new StringBuilder();
+        while (TryReadRecord(reader, fields, sb))
+        {
+            yield return ParseRow(fields);
+        }
+    }
+
+    private static bool SameHeader(CheckReportHeader a, CheckReportHeader b) =>
+        a.SchemaVersion == b.SchemaVersion
+        && string.Equals(a.DatabaseFile, b.DatabaseFile, StringComparison.Ordinal)
+        && string.Equals(a.BasePath, b.BasePath, StringComparison.Ordinal)
+        && string.Equals(a.JobName, b.JobName, StringComparison.Ordinal)
+        && string.Equals(a.OriginComputer, b.OriginComputer, StringComparison.Ordinal)
+        && string.Equals(a.ScanName, b.ScanName, StringComparison.Ordinal)
+        && a.SkipHashCheck == b.SkipHashCheck
+        && a.IgnoreBasePath == b.IgnoreBasePath
+        && a.GeneratedUTC.Ticks == b.GeneratedUTC.Ticks;
+
+    /// <summary>
+    /// Opens the report and reads the comment lines and the column header line. The reader is positioned at the first record.
+    /// </summary>
+    private static StreamReader OpenAndReadHeader(string path, out CheckReportHeader header)
+    {
+        var reader = new StreamReader(path, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        try
+        {
+            header = new CheckReportHeader();
+            bool signatureSeen = false;
+            string? line;
+            while ((line = reader.ReadLine()) is not null && line.StartsWith("#", StringComparison.Ordinal))
             {
                 ParseHeaderLine(line, header, ref signatureSeen);
-                continue;
             }
-            break;
-        }
-        if (!signatureSeen)
-        {
-            throw new InvalidDataException("Not a myDupFinder check report (missing signature line).");
-        }
-        if (i >= lines.Length)
-        {
-            throw new InvalidDataException("Check report has no column-header line.");
-        }
-        // i now points at the column-header line
-        ValidateColumnHeader(lines[i]);
-        i++;
-        var rows = new List<CheckReportRow>(Math.Max(0, lines.Length - i));
-        for (; i < lines.Length; i++)
-        {
-            if (string.IsNullOrEmpty(lines[i]))
+            if (!signatureSeen)
             {
-                continue;
+                throw new InvalidDataException("Not a myDupFinder check report (missing signature line).");
             }
-            rows.Add(ParseRow(lines[i]));
+            if (line is null)
+            {
+                throw new InvalidDataException("Check report has no column-header line.");
+            }
+            ValidateColumnHeader(line);
+            return reader;
         }
-        return (header, rows);
+        catch
+        {
+            reader.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Reads the next record: a state machine over the characters. Outside quotes a comma ends a field and CR, LF or CRLF end the record; inside a quoted field
+    /// every character (also CR, LF and commas) belongs to the field and a doubled quote is one quote. Blank lines between records are skipped.
+    /// </summary>
+    /// <returns>False at the end of the file.</returns>
+    /// <exception cref="InvalidDataException">The file ends inside a quoted field.</exception>
+    private static bool TryReadRecord(TextReader reader, List<string> fields, StringBuilder sb)
+    {
+        while (true)
+        {
+            fields.Clear();
+            sb.Clear();
+            bool inQuotes = false;
+            bool hasContent = false;
+            while (true)
+            {
+                int ch = reader.Read();
+                if (ch < 0)
+                {
+                    if (inQuotes)
+                    {
+                        throw new InvalidDataException("Check report ends inside a quoted field (unterminated quote).");
+                    }
+                    if (!hasContent)
+                    {
+                        return false;
+                    }
+                    fields.Add(sb.ToString());
+                    return true;
+                }
+                char c = (char)ch;
+                if (inQuotes)
+                {
+                    if (c == '"')
+                    {
+                        if (reader.Peek() == '"')
+                        {
+                            reader.Read();
+                            sb.Append('"');
+                        }
+                        else
+                        {
+                            inQuotes = false;
+                        }
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                    continue;
+                }
+                if (c == '\r' || c == '\n')
+                {
+                    if (c == '\r' && reader.Peek() == '\n')
+                    {
+                        reader.Read();
+                    }
+                    if (!hasContent)
+                    {
+                        break; // blank line, start the next record
+                    }
+                    fields.Add(sb.ToString());
+                    return true;
+                }
+                hasContent = true;
+                if (c == ',')
+                {
+                    fields.Add(sb.ToString());
+                    sb.Clear();
+                }
+                else if (c == '"' && sb.Length == 0)
+                {
+                    inQuotes = true;
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+        }
     }
 
     private static void ParseHeaderLine(string line, CheckReportHeader header, ref bool signatureSeen)
@@ -174,9 +295,8 @@ internal static class CheckReportCsv
         }
     }
 
-    private static CheckReportRow ParseRow(string line)
+    private static CheckReportRow ParseRow(List<string> fields)
     {
-        var fields = ParseFields(line);
         if (fields.Count != s_columns.Length)
         {
             throw new InvalidDataException($"Check report row has {fields.Count} fields, expected {s_columns.Length}.");
@@ -199,54 +319,6 @@ internal static class CheckReportCsv
             CreationTimeDisk = ParseDateTime(fields[13]),
         };
         return row;
-    }
-
-    private static List<string> ParseFields(string line)
-    {
-        var fields = new List<string>();
-        var sb = new StringBuilder();
-        bool inQuotes = false;
-        for (int i = 0; i < line.Length; i++)
-        {
-            char c = line[i];
-            if (inQuotes)
-            {
-                if (c == '"')
-                {
-                    if (i + 1 < line.Length && line[i + 1] == '"')
-                    {
-                        sb.Append('"');
-                        i++;
-                    }
-                    else
-                    {
-                        inQuotes = false;
-                    }
-                }
-                else
-                {
-                    sb.Append(c);
-                }
-            }
-            else
-            {
-                if (c == ',')
-                {
-                    fields.Add(sb.ToString());
-                    sb.Clear();
-                }
-                else if (c == '"' && sb.Length == 0)
-                {
-                    inQuotes = true;
-                }
-                else
-                {
-                    sb.Append(c);
-                }
-            }
-        }
-        fields.Add(sb.ToString());
-        return fields;
     }
 
     private static void Append(StringBuilder sb, string? value, bool last = false)

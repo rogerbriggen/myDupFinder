@@ -1,4 +1,4 @@
-﻿// Roger Briggen license this file to you under the MIT license.
+// Roger Briggen license this file to you under the MIT license.
 //
 
 using System;
@@ -141,8 +141,9 @@ public class UnreadableDirectoryRunnerTest : IDisposable
         var reports = Directory.GetFiles(_reportDir, "check-*.csv");
         Assert.Single(reports);
         var (_, rows) = CheckReportCsv.Read(reports[0]);
+        var rowArray = rows.ToArray();
         File.Delete(reports[0]);
-        return (runner, rows.ToArray());
+        return (runner, rowArray);
     }
 
     /// <summary>

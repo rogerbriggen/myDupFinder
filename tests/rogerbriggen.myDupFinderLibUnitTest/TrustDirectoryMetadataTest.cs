@@ -1,4 +1,4 @@
-﻿// Roger Briggen license this file to you under the MIT license.
+// Roger Briggen license this file to you under the MIT license.
 //
 
 using System;
@@ -106,8 +106,9 @@ public class TrustDirectoryMetadataTest : IDisposable
         SqliteConnection.ClearAllPools();
         string report = Directory.GetFiles(_reportDir, "check-*.csv").Single();
         var (_, rows) = CheckReportCsv.Read(report);
+        var rowArray = rows.ToArray();
         File.Delete(report);
-        return (runner, rows.ToArray());
+        return (runner, rowArray);
     }
 
     private List<ScanItemDto> ReadItems()
