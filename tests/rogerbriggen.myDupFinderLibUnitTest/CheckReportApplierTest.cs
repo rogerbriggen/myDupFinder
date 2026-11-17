@@ -341,10 +341,10 @@ public class CheckReportApplierTest : IDisposable
         var second = Apply(report, out _);
 
         Assert.Equal(0, second.InsertedCount);
-        Assert.Equal(1, second.AlreadyAppliedCount);
         Assert.Equal(0, second.RemovedCount);
         Assert.Equal(1, second.SkippedCount); // the ghost row is gone already
-        Assert.Equal(3, second.UpdatedCount); // the same values are written again
+        Assert.Equal(0, second.UpdatedCount); // the rows already have the state of the report, nothing is written
+        Assert.Equal(1 + 3, second.AlreadyAppliedCount); // fresh (insert) and the three updates
         Assert.Equal(0, second.ErrorCount);
         Assert.Equal(afterFirst, Snapshot(_dbPath, withoutScanDates: true));
         // One row per file: no file is a copy of itself
@@ -433,7 +433,7 @@ public class CheckReportApplierTest : IDisposable
             NewOnDiskRow(P("poison-n.dat"), _basePath, "N2"),
             ModifiedRow(u2, 60, Mtime.AddDays(1), "H2"),
             ModifiedRow(u3, 70, Mtime.AddDays(1), "H3"),
-            new CheckReportRow { Category = CheckCategory.MissingOnDisk, ScanItemId = gone.Id },
+            MissingRow(gone),
             NewOnDiskRow(P("n3.dat"), _basePath, "N3"),
         };
 

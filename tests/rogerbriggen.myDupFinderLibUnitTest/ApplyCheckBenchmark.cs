@@ -78,7 +78,7 @@ public class ApplyCheckBenchmark : IDisposable
             existing.Add(item);
             if (slot == 6)
             {
-                rows.Add(new CheckReportRow { Category = CheckCategory.MissingOnDisk, ScanItemId = item.Id, FilenameAndPathDB = path, PathBaseDB = BasePath });
+                rows.Add(MissingRow(item));
             }
             else if (slot >= 4)
             {
@@ -149,7 +149,7 @@ public class ApplyCheckBenchmark : IDisposable
         second.Apply(report);
         _output.WriteLine($"Second apply of the same report: {Stopwatch.GetElapsedTime(secondStart).TotalSeconds:F1} s. Inserted={second.InsertedCount} AlreadyApplied={second.AlreadyAppliedCount} Skipped={second.SkippedCount}");
         Assert.Equal(0, second.InsertedCount);
-        Assert.Equal(rows.Count(r => r.Category == CheckCategory.NewOnDisk), second.AlreadyAppliedCount);
+        Assert.Equal(rows.Count(r => r.Category != CheckCategory.MissingOnDisk), second.AlreadyAppliedCount); // inserts and updates are already applied, the removed rows are gone
     }
 
     private static List<string> Normalize(string dbPath) =>
