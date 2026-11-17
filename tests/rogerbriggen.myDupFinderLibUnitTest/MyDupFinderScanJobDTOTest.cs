@@ -147,4 +147,24 @@ public class MyDupFinderScanJobDTOTest
         MyDupFinderScanJobDTO.FixDto(dto);
         Assert.Equal(path, dto.ReportPath);
     }
+
+    [Fact]
+    public void FixDto_ShouldKeepAnEmptyReportPathEmpty()
+    {
+        var dto = new MyDupFinderScanJobDTO { BasePath = "base", ReportPath = string.Empty };
+        MyDupFinderScanJobDTO.FixDto(dto);
+        Assert.Equal(string.Empty, dto.ReportPath);
+
+        dto.ReportPath = "   ";
+        MyDupFinderScanJobDTO.FixDto(dto);
+        Assert.True(string.IsNullOrWhiteSpace(dto.ReportPath));
+    }
+
+    [Fact]
+    public void FixDto_ShouldAddADelimiterToANonEmptyReportPath()
+    {
+        var dto = new MyDupFinderScanJobDTO { BasePath = "base", ReportPath = "reports" };
+        MyDupFinderScanJobDTO.FixDto(dto);
+        Assert.Equal("reports" + System.IO.Path.DirectorySeparatorChar, dto.ReportPath);
+    }
 }

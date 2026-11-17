@@ -1,6 +1,9 @@
 // Roger Briggen license this file to you under the MIT license.
 //
 
+using System;
+using System.IO;
+
 namespace RogerBriggen.MyDupFinderData;
 
 public class MyDupFinderRefreshJobDTO
@@ -88,13 +91,26 @@ public class MyDupFinderRefreshJobDTO
         }
 
         //Rule: DatabaseFile and ReportPath are not allowed below the BasePath
-        string basePath = FileHelper.AddDirectoryDelimiter(dto.BasePath);
-        if (dto.DatabaseFile.StartsWith(basePath))
+        // CheckSanity runs before FixDto: the ReportPath may be the BasePath itself, with or without trailing separator
+        bool databaseFileBelowBase;
+        bool reportPathBelowBase = false;
+        try
+        {
+            databaseFileBelowBase = FileHelper.IsSameOrBelow(dto.DatabaseFile, dto.BasePath);
+            if (!string.IsNullOrWhiteSpace(dto.ReportPath))
+            {
+                reportPathBelowBase = FileHelper.IsSameOrBelow(dto.ReportPath, dto.BasePath);
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new ParameterException($"BasePath, DatabaseFile or ReportPath is not a valid path! {ex.Message}");
+        }
+        if (databaseFileBelowBase)
         {
             throw new ParameterException("Param DatabaseFile may not be a subdirectory of BasePath!");
         }
-        // CheckSanity runs before FixDto: a ReportPath that is the BasePath itself, without trailing separator, must be caught too
-        if (!string.IsNullOrWhiteSpace(dto.ReportPath) && FileHelper.AddDirectoryDelimiter(dto.ReportPath).StartsWith(basePath))
+        if (reportPathBelowBase)
         {
             throw new ParameterException("Param ReportPath may not be a subdirectory of BasePath!");
         }

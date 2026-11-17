@@ -88,4 +88,68 @@ public class ReportPathBelowBasePathTest : IDisposable
         MyDupFinderRefreshJobDTO.CheckSanity(Refresh(_root));
         MyDupFinderRefreshJobDTO.CheckSanity(Refresh(string.Empty));
     }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenDatabaseFileIsBelowBaseGivenWithDotSegments()
+    {
+        string db = _basePath + Path.DirectorySeparatorChar + "sub" + Path.DirectorySeparatorChar + ".." + Path.DirectorySeparatorChar + "x.db";
+        var scan = Scan(string.Empty);
+        scan.DatabaseFile = db;
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(scan));
+        File.WriteAllText(Path.Combine(_basePath, "x.db"), "dummy");
+        var refresh = Refresh(string.Empty);
+        refresh.DatabaseFile = db;
+        Assert.Throws<ParameterException>(() => MyDupFinderRefreshJobDTO.CheckSanity(refresh));
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenPathsAreBelowBaseGivenRelativeToTheCurrentDirectory()
+    {
+        // On another drive than the current directory the relative path is the absolute one: still a valid case
+        string relDb = Path.GetRelativePath(Environment.CurrentDirectory, Path.Combine(_basePath, "x.db"));
+        string relReport = Path.GetRelativePath(Environment.CurrentDirectory, Path.Combine(_basePath, "reports"));
+        var scan = Scan(string.Empty);
+        scan.DatabaseFile = relDb;
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(scan));
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(Scan(relReport)));
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrow_WhenPathsDifferOnlyInCaseOnWindows()
+    {
+        string upper = _basePath.ToUpperInvariant();
+        string reportPath = Path.Combine(upper, "reports");
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(Scan(reportPath)));
+            Assert.Throws<ParameterException>(() => MyDupFinderRefreshJobDTO.CheckSanity(Refresh(reportPath)));
+        }
+        else
+        {
+            MyDupFinderScanJobDTO.CheckSanity(Scan(reportPath));
+        }
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldNotThrow_WhenDatabaseFileIsInASiblingWithTheSamePrefix()
+    {
+        string siblingDir = _basePath + "2";
+        Directory.CreateDirectory(siblingDir);
+        string db = Path.Combine(siblingDir, "x.db");
+        File.WriteAllText(db, "dummy");
+        var scan = Scan(string.Empty);
+        scan.DatabaseFile = db;
+        MyDupFinderScanJobDTO.CheckSanity(scan);
+        var refresh = Refresh(string.Empty);
+        refresh.DatabaseFile = db;
+        MyDupFinderRefreshJobDTO.CheckSanity(refresh);
+    }
+
+    [Fact]
+    public void CheckSanity_ShouldThrowParameterException_WhenAPathIsNotValid()
+    {
+        // A NUL character is rejected by Path.GetFullPath
+        var scan = Scan("bad" + '\0' + "path");
+        Assert.Throws<ParameterException>(() => MyDupFinderScanJobDTO.CheckSanity(scan));
+    }
 }
