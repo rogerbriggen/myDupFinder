@@ -26,8 +26,13 @@ internal sealed record ScanErrorSnapshot(string FilenameAndPath, string PathBase
 /// </summary>
 internal static class PipelineTestSupport
 {
-    /// <summary>Longest a test waits for a signal or for the end of a run. A healthy run takes well under 10 seconds.</summary>
-    public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// Longest a test waits for a signal or for the end of a run. It only detects a deadlock: no passing test waits this long.
+    /// A healthy run takes a few seconds on a developer machine, but on a loaded CI runner (few cores, the whole suite in parallel) the
+    /// 3000-file runs of <c>Pipeline_EightWorkers_StoresEveryFileExactlyOnce_AlsoWhenRepeated</c> took up to about 40 seconds each, and 60 seconds were exceeded now and then.
+    /// Three minutes leave room for that, and a deadlocked wait still fails the test (with this message) before the hang timeout of the test run (<c>--blame-hang-timeout 5m</c>) stops it.
+    /// </summary>
+    public static readonly TimeSpan Timeout = TimeSpan.FromMinutes(3);
 
     public static ServiceProvider BuildServices(ILoggerProvider? loggerProvider = null, LogLevel minimumLevel = LogLevel.Information)
     {
